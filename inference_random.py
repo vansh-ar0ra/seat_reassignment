@@ -5,7 +5,7 @@ import random
 from typing import List, Optional
 
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "airline_reassignment_inference"))
+sys.path.insert(0, os.path.dirname(__file__))
 from client import AirlineReassignmentEnv
 from models import AirlineReassignmentAction
 
