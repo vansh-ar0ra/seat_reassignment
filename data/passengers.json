@@ -1,0 +1,167 @@
+{
+  "passengers": [
+    {
+      "passenger_id": "PAX-001",
+      "name": "Aarav Sharma",
+      "seat_ac1": "1A",
+      "cabin": "business",
+      "paid_window": true
+    },
+    {
+      "passenger_id": "PAX-002",
+      "name": "Priya Patel",
+      "seat_ac1": "1B",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-003",
+      "name": "Rohan Gupta",
+      "seat_ac1": "1C",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-004",
+      "name": "Ananya Singh",
+      "seat_ac1": "1D",
+      "cabin": "business",
+      "paid_window": true
+    },
+    {
+      "passenger_id": "PAX-005",
+      "name": "Vikram Mehta",
+      "seat_ac1": "2A",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-006",
+      "name": "Deepa Nair",
+      "seat_ac1": "2B",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-007",
+      "name": "Arjun Kumar",
+      "seat_ac1": "2C",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-008",
+      "name": "Shreya Iyer",
+      "seat_ac1": "2D",
+      "cabin": "business",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-009",
+      "name": "Rahul Verma",
+      "seat_ac1": "3A",
+      "cabin": "economy",
+      "paid_window": true
+    },
+    {
+      "passenger_id": "PAX-010",
+      "name": "Kavya Reddy",
+      "seat_ac1": "3B",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-011",
+      "name": "Aditya Joshi",
+      "seat_ac1": "3C",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-012",
+      "name": "Pooja Agarwal",
+      "seat_ac1": "3D",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-013",
+      "name": "Kiran Rao",
+      "seat_ac1": "3E",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-014",
+      "name": "Neha Mishra",
+      "seat_ac1": "3F",
+      "cabin": "economy",
+      "paid_window": true
+    },
+    {
+      "passenger_id": "PAX-015",
+      "name": "Suresh Pillai",
+      "seat_ac1": "4A",
+      "cabin": "economy",
+      "paid_window": true
+    },
+    {
+      "passenger_id": "PAX-016",
+      "name": "Riya Desai",
+      "seat_ac1": "4B",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-017",
+      "name": "Arun Pandey",
+      "seat_ac1": "4C",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-018",
+      "name": "Divya Chopra",
+      "seat_ac1": "4D",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-019",
+      "name": "Manish Kapoor",
+      "seat_ac1": "4E",
+      "cabin": "economy",
+      "paid_window": false
+    },
+    {
+      "passenger_id": "PAX-020",
+      "name": "Sana Bose",
+      "seat_ac1": "4F",
+      "cabin": "economy",
+      "paid_window": false
+    }
+  ],
+  "ac1_assignments": {
+    "1A": "PAX-001",
+    "1B": "PAX-002",
+    "1C": "PAX-003",
+    "1D": "PAX-004",
+    "2A": "PAX-005",
+    "2B": "PAX-006",
+    "2C": "PAX-007",
+    "2D": "PAX-008",
+    "3A": "PAX-009",
+    "3B": "PAX-010",
+    "3C": "PAX-011",
+    "3D": "PAX-012",
+    "3E": "PAX-013",
+    "3F": "PAX-014",
+    "4A": "PAX-015",
+    "4B": "PAX-016",
+    "4C": "PAX-017",
+    "4D": "PAX-018",
+    "4E": "PAX-019",
+    "4F": "PAX-020"
+  },
+  "ac2_assignments": {}
+}
