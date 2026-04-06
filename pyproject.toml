@@ -9,7 +9,7 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-airline_reassignment_inference"
+name = "airline_reassignment"
 version = "0.1.0"
 description = "Airline Reassignment Inference environment for OpenEnv"
 requires-python = ">=3.10"
@@ -31,10 +31,10 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m airline_reassignment_inference.server.app
-server = "airline_reassignment_inference.server.app:main"
+# or: python -m airline_reassignment.server.app
+server = "airline_reassignment.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["airline_reassignment_inference", "airline_reassignment_inference.server"]
-package-dir = { "airline_reassignment_inference" = ".", "airline_reassignment_inference.server" = "server" }
+packages = ["airline_reassignment", "airline_reassignment.server"]
+package-dir = { "airline_reassignment" = ".", "airline_reassignment.server" = "server" }

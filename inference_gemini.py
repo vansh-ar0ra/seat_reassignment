@@ -33,7 +33,7 @@ TASK_NAME = "seat_reassignment"
 BENCHMARK = "airline_reassignment"
 MAX_STEPS = 60
 TEMPERATURE = 0.3
-MAX_TOKENS = 300
+MAX_TOKENS = 1000
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -63,7 +63,10 @@ You have three tools. Each turn you must call exactly one tool.
    - Use this to fix earlier mistakes (e.g., a paid-window passenger in a middle seat)
 
 ACTION FORMAT:
-Respond with ONLY a JSON object, no other text:
+Respond with ONLY a raw JSON object and absolutely no other text.
+Do not include any reasoning, conversational text, or explanations.
+Do NOT use markdown code blocks (e.g., ```json or ```). Respond ONLY with the JSON itself.
+Examples:
 {"tool_name": "get_passenger_details", "args": {"seat_id": "1A"}}
 {"tool_name": "assign_seat", "args": {"passenger_id": "PAX-003", "target_seat_id": "3A"}}
 {"tool_name": "swap_seats", "args": {"passenger_id_1": "PAX-003", "passenger_id_2": "PAX-007"}}

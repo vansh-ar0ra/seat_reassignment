@@ -36,6 +36,33 @@ wheels = [
 ]
 
 [[package]]
+name = "airline-reassignment"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "google-generativeai" },
+    { name = "openenv-core", extra = ["core"] },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "google-generativeai", specifier = ">=0.8.6" },
+    { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1758,33 +1785,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/02/2e/58d83848dd1a79cb9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/cf/03675d8bd8ecbf4445504d8071adab19f5f993676795708e36402ab38263/openapi_pydantic-0.5.1-py3-none-any.whl", hash = "sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146", size = 96381, upload-time = "2025-01-08T19:29:25.275Z" },
 ]
-
-[[package]]
-name = "openenv-airline-reassignment-inference"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "google-generativeai" },
-    { name = "openenv-core", extra = ["core"] },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "google-generativeai", specifier = ">=0.8.6" },
-    { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
-    { name = "pandas", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "openenv-core"
