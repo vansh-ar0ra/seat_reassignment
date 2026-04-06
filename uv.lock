@@ -41,6 +41,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-generativeai" },
+    { name = "huggingface-hub" },
     { name = "openenv-core", extra = ["core"] },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -55,6 +56,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "google-generativeai", specifier = ">=0.8.6" },
+    { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

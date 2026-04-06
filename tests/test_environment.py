@@ -74,7 +74,7 @@ class TestReset:
     def test_ac2_starts_empty(self):
         env = AirlineReassignmentEnvironment()
         obs = env.reset()
-        assert obs.ac2_seats_occupied == {}
+        assert obs.ac2_seat_assignments == {}
         assert len(obs.ac2_seats_available) == 24  # AC-2 has 24 seats
 
     def test_layouts_present(self):
@@ -111,8 +111,8 @@ class TestFetchThenAssign:
 
         assert obs.tool_result["status"] == "success"
         assert obs.passengers_remaining == 19
-        assert "1A" in obs.ac2_seats_occupied
-        assert obs.ac2_seats_occupied["1A"] == "PAX-001"
+        assert "1A" in obs.ac2_seat_assignments
+        assert obs.ac2_seat_assignments["1A"] == "PAX-001"
 
     def test_assigned_seat_removed_from_ac2_available(self):
         env = make_env()
@@ -213,9 +213,9 @@ class TestSwap:
         swap(env, "PAX-001", "PAX-004")
         obs = env.step(AirlineReassignmentAction(tool_name="get_passenger_details", args={"seat_id": "1A"}))
         # After swap: PAX-001 should be in 1D, PAX-004 in 1B
-        # Reading observation ac2_seats_occupied
-        assert obs.ac2_seats_occupied.get("1D") == "PAX-001"
-        assert obs.ac2_seats_occupied.get("1B") == "PAX-004"
+        # Reading observation ac2_seat_assignments
+        assert obs.ac2_seat_assignments.get("1D") == "PAX-001"
+        assert obs.ac2_seat_assignments.get("1B") == "PAX-004"
 
     def test_swap_not_yet_assigned_errors(self):
         env = make_env()

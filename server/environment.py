@@ -313,7 +313,7 @@ class AirlineReassignmentEnvironment(Environment):
             ac1_layout=ep.ac1_config,
             ac2_layout=ep.ac2_config,
             ac1_seats_occupied=ac1_seats_occupied,
-            ac2_seats_occupied=ac2_occupied,
+            ac2_seat_assignments=ac2_occupied,
             ac2_seats_available=ac2_available,
             passengers_remaining=int(unassigned_mask.sum()),
             passengers_total=len(ep.passengers_df),

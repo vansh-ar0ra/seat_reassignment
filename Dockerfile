@@ -5,10 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 # Multi-stage build using openenv-base
-# This Dockerfile is flexible and works for both:
-# - In-repo environments (with local OpenEnv sources)
-# - Standalone environments (with openenv from PyPI/Git)
-# The build script (openenv build) handles context detection and sets appropriate build args.
+# This Dockerfile is at the project root, so the build context is the root directory.
+# Run: openenv build -f Dockerfile --context . (or docker build -t airline_reassignment .)
 
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
@@ -21,14 +19,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Build argument to control whether we're building standalone or in-repo
-ARG BUILD_MODE=in-repo
-ARG ENV_NAME=airline_reassignment_inference
+ARG BUILD_MODE=standalone
+ARG ENV_NAME=airline_reassignment
 
-# Copy environment code (always at root of build context)
+# Copy entire project root as the build context
 COPY . /app/env
 
-# For in-repo builds, openenv is already vendored in the build context
-# For standalone builds, openenv will be installed via pyproject.toml
 WORKDIR /app/env
 
 # Ensure uv is available (for local builds where base image lacks it)
@@ -37,9 +33,9 @@ RUN if ! command -v uv >/dev/null 2>&1; then \
         mv /root/.local/bin/uv /usr/local/bin/uv && \
         mv /root/.local/bin/uvx /usr/local/bin/uvx; \
     fi
-    
+
 # Install dependencies using uv sync
-# If uv.lock exists, use it; otherwise resolve on the fly
+# uv.lock is at the project root, so this resolves correctly
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -f uv.lock ]; then \
         uv sync --frozen --no-install-project --no-editable; \
@@ -62,19 +58,22 @@ WORKDIR /app
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
 
-# Copy the environment code
+# Copy the entire project (includes server/, data/, models.py, etc.)
 COPY --from=builder /app/env /app/env
 
 # Set PATH to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Set PYTHONPATH so imports work correctly
+# Set PYTHONPATH so imports resolve from the project root
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Runtime configuration (override with -e at docker run time — no secrets here)
+ENV WORKERS=4
+ENV MAX_CONCURRENT_ENVS=100
 
-# Run the FastAPI server
-# The module path is constructed to work with the /app/env structure
-CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]
+# Health check — uses Python stdlib so no curl dependency required
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Run via the installed package path (matches pyproject.toml entry point)
+CMD ["uvicorn", "airline_reassignment.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

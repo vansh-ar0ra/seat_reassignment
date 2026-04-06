@@ -106,9 +106,9 @@ def format_state(obs) -> str:
 
     parts.append(f"\nAC-1 seats still occupied (passengers to reassign): {obs.ac1_seats_occupied}")
 
-    if obs.ac2_seats_occupied:
+    if obs.ac2_seat_assignments:
         parts.append(f"\nAC-2 current assignments:")
-        for seat_id, pax_id in sorted(obs.ac2_seats_occupied.items()):
+        for seat_id, pax_id in sorted(obs.ac2_seat_assignments.items()):
             parts.append(f"  {seat_id} -> {pax_id}")
     else:
         parts.append(f"\nAC-2: No passengers assigned yet.")

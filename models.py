@@ -52,9 +52,9 @@ class AirlineReassignmentObservation(Observation):
         default_factory=list,
         description="AC-1 seat IDs whose passengers have NOT yet been moved to AC-2",
     )
-    ac2_seats_occupied: Dict[str, str] = Field(
+    ac2_seat_assignments: Dict[str, str] = Field(
         default_factory=dict,
-        description="AC-2 seat_id → passenger_id for currently occupied AC-2 seats",
+        description="AC-2 seat_id → passenger_id for currently assigned AC-2 seats",
     )
     ac2_seats_available: List[str] = Field(
         default_factory=list,
