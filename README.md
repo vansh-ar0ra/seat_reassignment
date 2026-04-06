@@ -1,6 +1,6 @@
-# OpenEnv Seat Swap Inference
+# OpenEnv Airline Reassignment Inference
 
-This project implements an OpenEnv-compatible server for a "Seat Swap" logic test, as well as an inference client script that solves it using Google's Gemini models.
+This project implements an OpenEnv-compatible server for a "Airline Reassignment" logic test, as well as an inference client script that solves it using Google's Gemini models.
 
 ## Prerequisites
 

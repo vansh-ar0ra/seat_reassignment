@@ -1,5 +1,5 @@
 """
-Integration tests for SeatSwapEnvironment.
+Integration tests for AirlineReassignmentEnvironment.
 
 Tests instantiate the environment directly — no server, no WebSocket.
 All 20 passengers and their AC-1 seat assignments are fixed by the data
@@ -17,33 +17,33 @@ Run with: pytest tests/test_environment.py -v
 
 import pytest
 
-from models import SeatSwapAction, SeatSwapObservation
-from server.environment import SeatSwapEnvironment
+from models import AirlineReassignmentAction, AirlineReassignmentObservation
+from server.environment import AirlineReassignmentEnvironment
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_env() -> SeatSwapEnvironment:
-    env = SeatSwapEnvironment()
+def make_env() -> AirlineReassignmentEnvironment:
+    env = AirlineReassignmentEnvironment()
     env.reset()
     return env
 
 
-def fetch(env, seat_id: str) -> SeatSwapObservation:
-    return env.step(SeatSwapAction(tool_name="get_passenger_details", args={"seat_id": seat_id}))
+def fetch(env, seat_id: str) -> AirlineReassignmentObservation:
+    return env.step(AirlineReassignmentAction(tool_name="get_passenger_details", args={"seat_id": seat_id}))
 
 
-def assign(env, passenger_id: str, target_seat_id: str) -> SeatSwapObservation:
-    return env.step(SeatSwapAction(
+def assign(env, passenger_id: str, target_seat_id: str) -> AirlineReassignmentObservation:
+    return env.step(AirlineReassignmentAction(
         tool_name="assign_seat",
         args={"passenger_id": passenger_id, "target_seat_id": target_seat_id},
     ))
 
 
-def swap(env, pid1: str, pid2: str) -> SeatSwapObservation:
-    return env.step(SeatSwapAction(
+def swap(env, pid1: str, pid2: str) -> AirlineReassignmentObservation:
+    return env.step(AirlineReassignmentAction(
         tool_name="swap_seats",
         args={"passenger_id_1": pid1, "passenger_id_2": pid2},
     ))
@@ -55,7 +55,7 @@ def swap(env, pid1: str, pid2: str) -> SeatSwapObservation:
 
 class TestReset:
     def test_basic_fields(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
 
         assert obs.done is False
@@ -67,24 +67,24 @@ class TestReset:
         assert obs.step_count == 0
 
     def test_all_ac1_seats_occupied(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
         assert len(obs.ac1_seats_occupied) == 20
 
     def test_ac2_starts_empty(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
         assert obs.ac2_seats_occupied == {}
         assert len(obs.ac2_seats_available) == 24  # AC-2 has 24 seats
 
     def test_layouts_present(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
         assert obs.ac1_layout.get("aircraft_id") == "AC-1"
         assert obs.ac2_layout.get("aircraft_id") == "AC-2"
 
     def test_max_steps_is_three_times_passengers(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
         assert obs.max_steps == 60  # 3 × 20
 
@@ -146,7 +146,7 @@ class TestFetchThenAssign:
         assert obs2.cumulative_reward == pytest.approx(obs1.reward + obs2.reward)
 
     def test_grader_score_none_after_reset(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         obs = env.reset()
         assert obs.grader_score is None
 
@@ -158,14 +158,14 @@ class TestFetchThenAssign:
 class TestInvalidTool:
     def test_unknown_tool_returns_error(self):
         env = make_env()
-        obs = env.step(SeatSwapAction(tool_name="teleport_passenger", args={}))
+        obs = env.step(AirlineReassignmentAction(tool_name="teleport_passenger", args={}))
 
         assert obs.tool_result["status"] == "error"
         assert "teleport_passenger" in obs.tool_result["message"]
 
     def test_unknown_tool_gives_negative_reward(self):
         env = make_env()
-        obs = env.step(SeatSwapAction(tool_name="nonexistent", args={}))
+        obs = env.step(AirlineReassignmentAction(tool_name="nonexistent", args={}))
         assert obs.reward < 0
 
 
@@ -211,7 +211,7 @@ class TestSwap:
     def test_swap_changes_seats_in_observation(self):
         env = self._setup_two_assigned()
         swap(env, "PAX-001", "PAX-004")
-        obs = env.step(SeatSwapAction(tool_name="get_passenger_details", args={"seat_id": "1A"}))
+        obs = env.step(AirlineReassignmentAction(tool_name="get_passenger_details", args={"seat_id": "1A"}))
         # After swap: PAX-001 should be in 1D, PAX-004 in 1B
         # Reading observation ac2_seats_occupied
         assert obs.ac2_seats_occupied.get("1D") == "PAX-001"
@@ -249,8 +249,8 @@ FULL_ASSIGNMENTS = {
 
 
 class TestEpisodeCompletion:
-    def _run_full_episode(self) -> SeatSwapObservation:
-        env = SeatSwapEnvironment()
+    def _run_full_episode(self) -> AirlineReassignmentObservation:
+        env = AirlineReassignmentEnvironment()
         env.reset()
         obs = None
         for pid, seat in FULL_ASSIGNMENTS.items():
@@ -277,7 +277,7 @@ class TestEpisodeCompletion:
         assert 0.0 <= obs.grader_score <= 1.0
 
     def test_grader_score_present_mid_episode(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         obs = assign(env, "PAX-001", "1A")
         # Grader score should be live after any step, not just at episode end
@@ -298,14 +298,14 @@ class TestEpisodeCompletion:
         assert obs.tool_result["terminal_breakdown"]["cabin_score"] == pytest.approx(1.0)
 
     def test_state_is_complete(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         for pid, seat in FULL_ASSIGNMENTS.items():
             assign(env, pid, seat)
         assert env.state.is_complete is True
 
     def test_step_after_done_raises(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         for pid, seat in FULL_ASSIGNMENTS.items():
             assign(env, pid, seat)
@@ -319,7 +319,7 @@ class TestEpisodeCompletion:
 
 class TestStepLimit:
     def test_episode_terminates_at_max_steps(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         obs = None
         # Fetch seat 1A on every step — redundant after the first
@@ -329,7 +329,7 @@ class TestStepLimit:
         assert obs.step_count == 60
 
     def test_incomplete_penalty_applied(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         for _ in range(60):
             fetch(env, "1A")
@@ -339,7 +339,7 @@ class TestStepLimit:
         assert s.is_complete is True  # done=True even though incomplete
 
     def test_timeout_reason_in_observation(self):
-        env = SeatSwapEnvironment()
+        env = AirlineReassignmentEnvironment()
         env.reset()
         obs = None
         for _ in range(60):

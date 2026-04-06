@@ -1,4 +1,4 @@
-"""Seat Swap Environment Client."""
+"""Airline Reassignment Environment Client."""
 
 from typing import Dict
 
@@ -6,22 +6,22 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 
 try:
-    from .models import SeatSwapAction, SeatSwapObservation, SeatSwapState
+    from .models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
 except ImportError:
-    from models import SeatSwapAction, SeatSwapObservation, SeatSwapState
+    from models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
 
 
-class SeatSwapEnv(EnvClient[SeatSwapAction, SeatSwapObservation, SeatSwapState]):
+class AirlineReassignmentEnv(EnvClient[AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState]):
     """
-    WebSocket client for the Seat Swap Environment.
+    WebSocket client for the Airline Reassignment Environment.
 
     Example:
-        >>> with SeatSwapEnv(base_url="http://localhost:8000") as env:
+        >>> with AirlineReassignmentEnv(base_url="http://localhost:8000") as env:
         ...     result = env.reset()
         ...     obs = result.observation
         ...     print(obs.passengers_remaining)  # 20
         ...
-        ...     action = SeatSwapAction(
+        ...     action = AirlineReassignmentAction(
         ...         tool_name="get_passenger_details",
         ...         args={"seat_id": "1A"},
         ...     )
@@ -29,17 +29,17 @@ class SeatSwapEnv(EnvClient[SeatSwapAction, SeatSwapObservation, SeatSwapState])
         ...     print(result.observation.tool_result)
     """
 
-    def _step_payload(self, action: SeatSwapAction) -> Dict:
+    def _step_payload(self, action: AirlineReassignmentAction) -> Dict:
         return {"tool_name": action.tool_name, "args": action.args}
 
-    def _parse_result(self, payload: Dict) -> StepResult[SeatSwapObservation]:
+    def _parse_result(self, payload: Dict) -> StepResult[AirlineReassignmentObservation]:
         obs_data = payload.get("observation", payload)
-        obs = SeatSwapObservation(**obs_data)
+        obs = AirlineReassignmentObservation(**obs_data)
         return StepResult(
             observation=obs,
             reward=payload.get("reward"),
             done=payload.get("done", False),
         )
 
-    def _parse_state(self, payload: Dict) -> SeatSwapState:
-        return SeatSwapState(**payload)
+    def _parse_state(self, payload: Dict) -> AirlineReassignmentState:
+        return AirlineReassignmentState(**payload)

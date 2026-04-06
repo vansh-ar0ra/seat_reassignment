@@ -5,9 +5,9 @@ import random
 from typing import List, Optional
 
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "seat_swap_inference"))
-from client import SeatSwapEnv
-from models import SeatSwapAction
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "airline_reassignment_inference"))
+from client import AirlineReassignmentEnv
+from models import AirlineReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -18,7 +18,7 @@ IMAGE_NAME = os.getenv("IMAGE_NAME")
 # Constants
 # ---------------------------------------------------------------------------
 TASK_NAME = "seat_reassignment_random"
-BENCHMARK = "seat_swap"
+BENCHMARK = "airline_reassignment"
 MAX_STEPS = 60
 RANDOM_SEED = 42
 
@@ -47,7 +47,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 async def main() -> None:
     random.seed(RANDOM_SEED)
 
-    env = SeatSwapEnv(base_url="http://localhost:8000")
+    env = AirlineReassignmentEnv(base_url="http://localhost:8000")
 
     rewards: List[float] = []
     steps_taken = 0
@@ -101,7 +101,7 @@ async def main() -> None:
             action_summary = f"{action_dict['tool_name']}({json.dumps(action_dict['args'])})"
             print(f"Step {step}: {action_summary}", flush=True)
 
-            result = await env.step(SeatSwapAction(
+            result = await env.step(AirlineReassignmentAction(
                 tool_name=action_dict["tool_name"],
                 args=action_dict["args"],
             ))

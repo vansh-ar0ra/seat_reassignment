@@ -11,8 +11,8 @@ from openai import OpenAI
 # Load .env from the project root (one level up from this file's directory)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from client import SeatSwapEnv
-from models import SeatSwapAction
+from client import AirlineReassignmentEnv
+from models import AirlineReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -25,7 +25,7 @@ IMAGE_NAME = os.getenv("IMAGE_NAME")
 # Constants
 # ---------------------------------------------------------------------------
 TASK_NAME = "seat_reassignment"
-BENCHMARK = "seat_swap"
+BENCHMARK = "airline_reassignment"
 MAX_STEPS = 60
 TEMPERATURE = 0.3
 MAX_TOKENS = 300
@@ -213,7 +213,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    env = SeatSwapEnv(base_url="http://localhost:8000")
+    env = AirlineReassignmentEnv(base_url="http://localhost:8000")
 
     rewards: List[float] = []
     steps_taken = 0
@@ -248,7 +248,7 @@ async def main() -> None:
             print(f"\n--- Step {step} ---", flush=True)
             print(f"  Action: {action_summary}", flush=True)
 
-            result = await env.step(SeatSwapAction(
+            result = await env.step(AirlineReassignmentAction(
                 tool_name=action_dict["tool_name"],
                 args=action_dict["args"],
             ))

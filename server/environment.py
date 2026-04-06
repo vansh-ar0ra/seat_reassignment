@@ -20,11 +20,11 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import SeatSwapAction, SeatSwapObservation, SeatSwapState
+    from ..models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
     from .tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
     from .rewards import RewardComputer
 except ImportError:
-    from models import SeatSwapAction, SeatSwapObservation, SeatSwapState
+    from models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
     from server.tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
     from server.rewards import RewardComputer
 
@@ -64,7 +64,7 @@ class EpisodeState:
 # Environment
 # ---------------------------------------------------------------------------
 
-class SeatSwapEnvironment(Environment):
+class AirlineReassignmentEnvironment(Environment):
     """
     OpenEnv environment for airline seat reassignment.
 
@@ -86,7 +86,7 @@ class SeatSwapEnvironment(Environment):
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, seed: Optional[int] = None) -> SeatSwapObservation:
+    def reset(self, seed: Optional[int] = None) -> AirlineReassignmentObservation:
         """Load data, build lookup dicts, and return the initial observation."""
         episode_id = str(uuid4())
         self._state = State(episode_id=episode_id, step_count=0)
@@ -154,7 +154,7 @@ class SeatSwapEnvironment(Environment):
             done=False,
         )
 
-    def step(self, action: SeatSwapAction) -> SeatSwapObservation:  # type: ignore[override]
+    def step(self, action: AirlineReassignmentAction) -> AirlineReassignmentObservation:  # type: ignore[override]
         """Execute one tool call and return the updated observation."""
         if self._episode is None:
             raise RuntimeError("step() called without reset()")
@@ -263,14 +263,14 @@ class SeatSwapEnvironment(Environment):
         )
 
     @property
-    def state(self) -> SeatSwapState:  # type: ignore[override]
+    def state(self) -> AirlineReassignmentState:  # type: ignore[override]
         if self._episode is None:
-            return SeatSwapState()
+            return AirlineReassignmentState()
 
         ep = self._episode
         assigned_count = int(ep.assignments["seat_ac2"].notna().sum())
 
-        return SeatSwapState(
+        return AirlineReassignmentState(
             episode_id=self._state.episode_id,
             step_count=ep.step_count,
             total_passengers=len(ep.passengers_df),
@@ -291,7 +291,7 @@ class SeatSwapEnvironment(Environment):
         reward_reason: str,
         done: bool,
         grader_score: Optional[float] = None,
-    ) -> SeatSwapObservation:
+    ) -> AirlineReassignmentObservation:
         ep = self._episode
 
         # AC-1 seats whose passengers have NOT yet been moved
@@ -309,7 +309,7 @@ class SeatSwapEnvironment(Environment):
         occupied_set = set(ac2_occupied.keys())
         ac2_available = sorted(s for s in ep.ac2_seat_set if s not in occupied_set)
 
-        return SeatSwapObservation(
+        return AirlineReassignmentObservation(
             ac1_layout=ep.ac1_config,
             ac2_layout=ep.ac2_config,
             ac1_seats_occupied=ac1_seats_occupied,

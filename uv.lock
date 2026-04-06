@@ -1760,6 +1760,33 @@ wheels = [
 ]
 
 [[package]]
+name = "openenv-airline-reassignment-inference"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "google-generativeai" },
+    { name = "openenv-core", extra = ["core"] },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "google-generativeai", specifier = ">=0.8.6" },
+    { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "openenv-core"
 version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1793,33 +1820,6 @@ core = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-
-[[package]]
-name = "openenv-seat-swap-inference"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "google-generativeai" },
-    { name = "openenv-core", extra = ["core"] },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "google-generativeai", specifier = ">=0.8.6" },
-    { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
-    { name = "pandas", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "opentelemetry-api"

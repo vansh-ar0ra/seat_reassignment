@@ -9,9 +9,9 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-seat_swap_inference"
+name = "openenv-airline_reassignment_inference"
 version = "0.1.0"
-description = "Seat Swap Inference environment for OpenEnv"
+description = "Airline Reassignment Inference environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     "google-generativeai>=0.8.6",
@@ -31,10 +31,10 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m seat_swap_inference.server.app
-server = "seat_swap_inference.server.app:main"
+# or: python -m airline_reassignment_inference.server.app
+server = "airline_reassignment_inference.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["seat_swap_inference", "seat_swap_inference.server"]
-package-dir = { "seat_swap_inference" = ".", "seat_swap_inference.server" = "server" }
+packages = ["airline_reassignment_inference", "airline_reassignment_inference.server"]
+package-dir = { "airline_reassignment_inference" = ".", "airline_reassignment_inference.server" = "server" }

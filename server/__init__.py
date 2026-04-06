@@ -1,5 +1,5 @@
-"""Seat Swap environment server components."""
+"""Airline Reassignment environment server components."""
 
-from .environment import SeatSwapEnvironment
+from .environment import AirlineReassignmentEnvironment
 
-__all__ = ["SeatSwapEnvironment"]
+__all__ = ["AirlineReassignmentEnvironment"]
