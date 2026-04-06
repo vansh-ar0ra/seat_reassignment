@@ -1,3 +1,16 @@
+---
+title: Airline Reassignment Environment
+emoji: ✈️
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+app_port: 8000
+base_path: /web
+tags:
+  - openenv
+---
+
 # OpenEnv Airline Reassignment Inference
 
 This project implements an OpenEnv-compatible server for a "Airline Reassignment" logic test, as well as an inference client script that solves it using Google's Gemini models.
