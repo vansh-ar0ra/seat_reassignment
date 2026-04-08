@@ -19,6 +19,7 @@ Usage:
 
 import os
 import sys
+
 # Ensure the repo root is on sys.path so "models" and "server" resolve
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
@@ -46,10 +47,11 @@ app = create_app(
 )
 
 
-def main(host: str = "0.0.0.0", port: int = 8000):
+def main():
     import uvicorn
-    uvicorn.run("server.app:app", host=host, port=port)
+
+    uvicorn.run("server.app:app", host="0.0.0.0", port=8000)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
