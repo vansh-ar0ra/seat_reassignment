@@ -2,14 +2,22 @@ import asyncio
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
-from dotenv import load_dotenv
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0", "--quiet"])
+    from openai import OpenAI
 
-# Load .env from the project root (one level up from this file's directory)
-load_dotenv(Path(__file__).parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass  # evaluator sets env vars directly; .env not needed
 
 from client import SeatReassignmentEnv
 from models import SeatReassignmentAction
