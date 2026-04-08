@@ -18,7 +18,7 @@ Usage:
 """
 
 import os
-
+import sys
 # Ensure the repo root is on sys.path so "models" and "server" resolve
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
