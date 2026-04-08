@@ -19,70 +19,93 @@ from models import SeatReassignmentAction
 # ---------------------------------------------------------------------------
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"#"Qwen/Qwen2.5-72B-Instruct"
 IMAGE_NAME = os.getenv("IMAGE_NAME")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-TASK_NAME = "seat_reassignment"
 BENCHMARK = "seat_reassignment"
-MAX_STEPS = 60
 TEMPERATURE = 0.3
-MAX_TOKENS = 300
+MAX_TOKENS = 1000
 
 # ---------------------------------------------------------------------------
-# System prompt
+# System prompt (single unified prompt for all tasks)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are an airline operations agent. An aircraft swap has occurred — all 20 passengers from Aircraft-1 (AC-1) must be reassigned to Aircraft-2 (AC-2). The two aircraft have the same number of seats per cabin class but different seating layouts.
+
+SYSTEM_PROMPT = """You are an airline operations agent. An aircraft swap has occurred — passengers from Aircraft-1 (AC-1) must be reassigned to Aircraft-2 (AC-2). The two aircraft have the same cabin classes but different seating layouts.
 
 YOUR GOAL:
-Reassign every passenger from AC-1 to AC-2 while:
-1. Maintaining cabin class (business passengers stay in business, economy in economy)
-2. Satisfying paid preferences (passengers who paid for window seats should get window seats on AC-2)
+Reassign every passenger from AC-1 to AC-2, satisfying constraints in this priority order:
+1. CABIN CLASS (mandatory) — business passengers must go to business seats, economy passengers must go to economy seats.
+2. WINDOW PREFERENCE (if applicable) — if a passenger has paid_window=True, assign them to a window seat on AC-2.
+3. LEGROOM PREFERENCE (if applicable) — if a passenger has paid_legroom=True, assign them to a seat with extra legroom on AC-2.
+
+Only enforce the preferences that exist for a given passenger. If a passenger has no paid preferences, cabin class alone matters.
 
 TOOLS AVAILABLE:
-You have three tools. Each turn you must call exactly one tool.
+You have up to three tools depending on the task. Each turn you must call exactly one tool.
 
 1. get_passenger_details(seat_id)
    - Fetches the passenger info for an AC-1 seat
-   - Returns: passenger_id, name, cabin, paid_window, current_seat_type
-   - Use this BEFORE assigning to learn passenger preferences
+   - Returns: passenger_id, name, cabin, and any applicable preference fields (e.g. paid_window, paid_legroom)
+   - Use this to learn a passenger's preferences before assigning them
 
 2. assign_seat(passenger_id, target_seat_id)
    - Moves a passenger from AC-1 to a specific AC-2 seat
-   - The passenger must still be on AC-1, the AC-2 seat must be empty
-   - Returns: confirmation with cabin_match and preference_satisfied status
+   - The passenger must still be on AC-1; the AC-2 seat must be empty
+   - Returns: confirmation including cabin_match and any preference satisfaction fields
 
-3. swap_seats(passenger_id_1, passenger_id_2)
+3. swap_seats(passenger_id_1, passenger_id_2)  [if available]
    - Swaps two passengers who are BOTH already on AC-2
-   - Use this to fix earlier mistakes (e.g., a paid-window passenger in a middle seat)
+   - Use this to correct earlier misplacements
 
 ACTION FORMAT:
-Respond with ONLY a JSON object, no other text:
+Respond with ONLY a raw JSON object and absolutely no other text.
+Do not include any reasoning, conversational text, or explanations.
+Do NOT use markdown code blocks (e.g., ```json or ```). Respond ONLY with the JSON itself.
+Examples:
 {"tool_name": "get_passenger_details", "args": {"seat_id": "1A"}}
 {"tool_name": "assign_seat", "args": {"passenger_id": "PAX-003", "target_seat_id": "3A"}}
-{"tool_name": "swap_seats", "args": {"passenger_id_1": "PAX-003", "passenger_idþ_2": "PAX-007"}}
+{"tool_name": "swap_seats", "args": {"passenger_id_1": "PAX-003", "passenger_id_2": "PAX-007"}}
 
 STRATEGY:
-1. Start by fetching passenger details for constrained seats (business window seats first, then economy window seats) — these passengers are hardest to place correctly.
-2. Assign passengers whose preferences you know, matching cabin class and seat type.
-3. After assigning preference-critical passengers, fill remaining seats by cabin class.
-4. If you discover a paid-window passenger was placed incorrectly, use swap_seats to fix it.
-5. Window seats on AC-1: business 1A, 1D, 2A, 2D. Economy 3A, 3F, 4A, 4F.
-6. Window seats on AC-2: business 1A, 1D, 2A, 2D. Economy 3A, 3H, 4A, 4H.
+1. Fetch passenger details to discover preferences, prioritising passengers with the most constraints (legroom+window first, then window-only, then unconstrained).
+2. Assign passengers in order of constraint strictness — most constrained first:
+   a. Passengers with both paid_legroom and paid_window: target legroom window seats.
+   b. Passengers with paid_legroom only: target remaining legroom seats.
+   c. Passengers with paid_window only: target remaining window seats.
+   d. All other passengers: fill any open seat in the correct cabin class.
+3. If legroom seats exist on AC-2, reserve them for passengers who paid for legroom — do not waste them on unconstrained passengers.
+4. Use swap_seats to fix any misplacements discovered after assignment.
+5. You can read the AC-2 layout from the observation to identify which seats are windows or have legroom.
 
 IMPORTANT:
-- Never assign a passenger to a seat in the wrong cabin class.
-- Always check passenger details before assigning window-seat passengers.
-- Each tool call is one step. You have a maximum of 60 steps.
-- You can see the current state of both aircraft after each step."""
-
+- NEVER assign a passenger to the wrong cabin class. This is the highest priority and cannot be violated.
+- Always fetch passenger details before assigning passengers whose preferences you do not yet know.
+- Each tool call is one step. You can see the current state of both aircraft after each step.
+- Use the step limit efficiently — avoid redundant fetches for passengers you have already queried."""
 
 # ---------------------------------------------------------------------------
-# Observation formatting
+# Task definitions: (task_name, task_id, max_steps)
 # ---------------------------------------------------------------------------
-def format_observation(obs) -> str:
-    """Convert environment observation into a readable prompt for the LLM."""
+TASKS = [
+    ("task_easy",   "easy",   24),
+    ("task_medium", "medium", 60),
+    ("task_hard",   "hard",   60),
+]
+
+# ---------------------------------------------------------------------------
+# State and Prompt formatting functions
+# ---------------------------------------------------------------------------
+def format_main_task(task_id: str) -> str:
+    if task_id == "easy":
+        return "Task: Reassign all 8 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2), respecting cabin class."
+    if task_id == "hard":
+        return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2) respecting cabin class, window seat preferences, and extra legroom preferences."
+    return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2)."
+
+def format_state(obs) -> str:
     parts = []
 
     parts.append(
@@ -90,11 +113,8 @@ def format_observation(obs) -> str:
         f"Passengers remaining: {obs.passengers_remaining}/{obs.passengers_total} ==="
     )
 
-    if obs.tool_result is not None:
-        parts.append(f"\nLast tool result: {json.dumps(obs.tool_result, indent=2)}")
-
-    if obs.reward is not None and obs.step_count > 0:
-        parts.append(f"Reward: {obs.reward:.2f} ({obs.reward_reason})")
+    parts.append(f"\nAC-1 layout: {json.dumps(obs.ac1_layout['layout'], indent=2)}")
+    parts.append(f"AC-2 layout: {json.dumps(obs.ac2_layout['layout'], indent=2)}")
 
     parts.append(f"\nAC-1 seats still occupied (passengers to reassign): {obs.ac1_seats_occupied}")
 
@@ -105,14 +125,20 @@ def format_observation(obs) -> str:
     else:
         parts.append(f"\nAC-2: No passengers assigned yet.")
 
-    parts.append(f"\nAC-2 available seats: {obs.ac2_seats_available}")
+    return "\n".join(parts)
 
-    if obs.step_count == 0:
-        parts.append(f"\nAC-1 layout: {json.dumps(obs.ac1_layout['layout'], indent=2)}")
-        parts.append(f"AC-2 layout: {json.dumps(obs.ac2_layout['layout'], indent=2)}")
+def format_instruction() -> str:
+    return "Choose your next tool call. Respond with ONLY a JSON object."
 
-    parts.append("\nChoose your next tool call. Respond with ONLY a JSON object.")
+def format_result(item: dict) -> str:
+    parts = []
+    if item.get("result") is not None:
+        parts.append(f"Last tool result: {json.dumps(item['result'], indent=2)}")
+    if item.get("reward") is not None:
+        parts.append(f"Reward: {item['reward']:.2f} ({item.get('reward_reason', 'unknown')})")
 
+    if not parts:
+        return "Tool executed."
     return "\n".join(parts)
 
 
@@ -145,17 +171,34 @@ def parse_llm_response(response_text: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # LLM call
 # ---------------------------------------------------------------------------
-def get_agent_action(client: OpenAI, obs, conversation_history: list) -> Optional[dict]:
+def get_agent_action(
+    client: OpenAI, obs, conversation_history: list, task_id: str
+) -> Optional[dict]:
     """Call the LLM to get the next action."""
-    user_prompt = format_observation(obs)
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    for entry in conversation_history[-6:]:
-        messages.append({"role": "assistant", "content": entry["action"]})
-        messages.append({"role": "user", "content": entry["observation"]})
+    if not conversation_history:
+        # First query — include full task description + state
+        user_content = "\n\n".join([
+            format_main_task(task_id),
+            format_state(obs),
+            format_instruction()
+        ])
+        messages.append({"role": "user", "content": user_content})
+    else:
+        # Subsequent queries — replay recent history as interleaved turns
+        messages.append({"role": "user", "content": format_main_task(task_id)})
 
-    messages.append({"role": "user", "content": user_prompt})
+        recent_history = conversation_history[-6:]
+        for i, item in enumerate(recent_history):
+            messages.append({"role": "assistant", "content": json.dumps(item["action"])})
+
+            user_parts = [format_result(item)]
+            if i == len(recent_history) - 1:
+                user_parts.append(format_state(obs))
+                user_parts.append(format_instruction())
+
+            messages.append({"role": "user", "content": "\n\n".join(user_parts)})
 
     try:
         completion = client.chat.completions.create(
@@ -169,12 +212,10 @@ def get_agent_action(client: OpenAI, obs, conversation_history: list) -> Optiona
         parsed = parse_llm_response(response_text)
 
         if parsed is None:
-            print(f"[DEBUG] Failed to parse LLM response: {response_text[:200]}", flush=True)
             return None
 
         return parsed
     except Exception as exc:
-        print(f"[DEBUG] LLM request failed: {exc}", flush=True)
         return None
 
 
@@ -204,15 +245,18 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Per-task episode runner
 # ---------------------------------------------------------------------------
-async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
+async def run_task(
+    task_name: str,
+    task_id: str,
+    max_steps: int,
+    client: OpenAI,
+) -> None:
     env = SeatReassignmentEnv(base_url="http://localhost:8000")
 
     rewards: List[float] = []
@@ -221,32 +265,23 @@ async def main() -> None:
     success = False
     conversation_history: list = []
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        result = await env.reset()
+        result = await env.reset(task_id=task_id)
         obs = result.observation
 
-        print(f"\n{'='*60}", flush=True)
-        print(f"Episode started: {obs.passengers_total} passengers to reassign", flush=True)
-        print(f"AC-1 seats occupied: {len(obs.ac1_seats_occupied)}", flush=True)
-        print(f"AC-2 seats available: {len(obs.ac2_seats_available)}", flush=True)
-        print(f"Max steps: {obs.max_steps}", flush=True)
-        print(f"{'='*60}\n", flush=True)
-
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(1, max_steps + 1):
             if result.done:
                 break
 
-            action_dict = get_agent_action(client, obs, conversation_history)
+            action_dict = get_agent_action(client, obs, conversation_history, task_id)
 
             if action_dict is None:
-                print(f"[DEBUG] Step {step}: LLM failed, using fallback", flush=True)
                 action_dict = fallback_action(obs)
 
             action_summary = f"{action_dict['tool_name']}({json.dumps(action_dict['args'])})"
-            print(f"\n--- Step {step} ---", flush=True)
-            print(f"  Action: {action_summary}", flush=True)
+
 
             result = await env.step(SeatReassignmentAction(
                 tool_name=action_dict["tool_name"],
@@ -256,13 +291,7 @@ async def main() -> None:
             reward = result.reward or 0.0
             done = result.done
 
-            print(f"  Reward: {reward:.2f} ({obs.reward_reason})", flush=True)
-            print(f"  Passengers remaining: {obs.passengers_remaining}/{obs.passengers_total}", flush=True)
-            if obs.tool_result:
-                status = obs.tool_result.get("status", "unknown")
-                print(f"  Tool status: {status}", flush=True)
-                if status == "error":
-                    print(f"  Error: {obs.tool_result.get('message', 'unknown')}", flush=True)
+
 
             rewards.append(reward)
             steps_taken = step
@@ -275,33 +304,38 @@ async def main() -> None:
             log_step(step=step, action=action_summary, reward=reward, done=done, error=error)
 
             conversation_history.append({
-                "action": json.dumps(action_dict),
-                "observation": format_observation(obs),
+                "action": action_dict,
+                "result": obs.tool_result,
+                "reward": reward,
+                "reward_reason": obs.reward_reason,
             })
 
             if done:
-                print(f"\n{'='*60}", flush=True)
-                print(f"Episode complete at step {step}!", flush=True)
                 if obs.tool_result and "grader_score" in obs.tool_result:
                     score = obs.tool_result["grader_score"]
-                    print(f"Grader score: {score:.3f}", flush=True)
-                print(f"{'='*60}\n", flush=True)
                 break
 
         success = score >= 0.5
         score = min(max(score, 0.0), 1.0)
 
     except Exception as e:
-        print(f"[DEBUG] Episode failed with exception: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        pass
 
     finally:
         try:
             await env.close()
-        except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", flush=True)
+        except Exception:
+            pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+
+# ---------------------------------------------------------------------------
+# Main — loop over all tasks
+# ---------------------------------------------------------------------------
+async def main() -> None:
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    for task_name, task_id, max_steps in TASKS:
+        await run_task(task_name, task_id, max_steps, client)
 
 
 if __name__ == "__main__":
