@@ -64,28 +64,39 @@ class RewardComputer:
         """
         Reward for an assign_seat call.
 
-        Checks cabin_match first; preference_satisfied is only considered
-        when the cabin is correct.
+        Checks cabin_match first; preference satisfaction is only considered
+        when the cabin is correct. Handles both single (window) and dual
+        (window + legroom) preference dimensions gracefully.
         """
         if tool_result["status"] == "error":
             return (REWARD_ASSIGN_ERROR,
                     f"Assignment error: {tool_result.get('message', '')}")
 
         cabin_match = tool_result["cabin_match"]
-        pref = tool_result["preference_satisfied"]
-
         if not cabin_match:
             return (REWARD_ASSIGN_CABIN_MISMATCH, "Assignment: cabin mismatch")
 
-        if pref is True:
-            return (REWARD_ASSIGN_CABIN_PREF,
-                    "Valid assignment: cabin match, window preference satisfied")
-        if pref is None:
+        # Collect active preference results (True/False only; None = not applicable)
+        window_pref  = tool_result.get("window_preference_satisfied")
+        legroom_pref = tool_result.get("legroom_preference_satisfied")
+        active_prefs = [p for p in (window_pref, legroom_pref) if p is not None]
+
+        if not active_prefs:
+            # No paid preferences at all (easy task, or passengers without any pref)
             return (REWARD_ASSIGN_CABIN_NOPREF,
-                    "Valid assignment: cabin match, no window preference")
-        # pref is False
-        return (REWARD_ASSIGN_CABIN_PREFMISS,
-                "Valid assignment: cabin match, window preference not satisfied")
+                    "Valid assignment: cabin match, no preferences")
+
+        if all(active_prefs):
+            return (REWARD_ASSIGN_CABIN_PREF,
+                    "Valid assignment: cabin match, all preferences satisfied")
+
+        if not any(active_prefs):
+            return (REWARD_ASSIGN_CABIN_PREFMISS,
+                    "Valid assignment: cabin match, preferences not satisfied")
+
+        # Mixed: some satisfied, some missed
+        return (REWARD_ASSIGN_CABIN_NOPREF,
+                "Valid assignment: cabin match, some preferences satisfied")
 
     def reward_for_swap(
         self,
@@ -196,9 +207,18 @@ class RewardComputer:
         assigned = merged[merged["seat_ac2"].notna()].copy()
 
         cabin_score = self._cabin_score(assigned, ac2_seat_info, n_total)
-        n_pref = int(merged["paid_window"].sum())
 
-        if n_pref == 0:
+        # Check whether any preference columns exist with at least one paid passenger
+        has_window_pref  = (
+            "paid_window" in merged.columns
+            and bool(merged["paid_window"].astype(bool).sum() > 0)
+        )
+        has_legroom_pref = (
+            "paid_legroom" in merged.columns
+            and bool(merged["paid_legroom"].astype(bool).sum() > 0)
+        )
+
+        if not has_window_pref and not has_legroom_pref:
             return cabin_score
 
         preference_score = self._preference_score(merged, assigned, ac2_seat_info)
@@ -215,13 +235,16 @@ class RewardComputer:
 
         +1.0 for correct cabin.
         +1.0 if paid_window and seat is window; -0.5 if paid_window and not window.
-        No bonus/penalty for passengers without a window preference.
+        +1.0 if paid_legroom and seat has extra_legroom; -0.5 if not.
+        No bonus/penalty for dimensions the passenger did not pay for.
         """
         score = 0.0
-        if passenger["cabin"] == seat_info["cabin"]:
+        if passenger.get("cabin") == seat_info.get("cabin"):
             score += 1.0
-        if passenger["paid_window"]:
-            score += 1.0 if seat_info["seat_type"] == "window" else -0.5
+        if passenger.get("paid_window", False):
+            score += 1.0 if seat_info.get("seat_type") == "window" else -0.5
+        if passenger.get("paid_legroom", False):
+            score += 1.0 if seat_info.get("extra_legroom", False) else -0.5
         return score
 
     # ------------------------------------------------------------------
@@ -260,19 +283,48 @@ class RewardComputer:
         ac2_seat_info: dict,
     ) -> float:
         """
-        Fraction of paid-window passengers who ended up in a window seat.
+        Average satisfaction rate across all active preference dimensions.
 
-        Unassigned paid-window passengers count as unsatisfied (numerator 0,
-        denominator n_pref).  Returns 1.0 if there are no paid-window passengers.
+        For each dimension (window, legroom):
+          - Compute fraction of paid passengers who got the preference satisfied.
+          - Only include dimensions where at least one passenger paid for it.
+        Returns 1.0 if no preference dimension is active (easy task or no paid pref).
+        Unassigned paid passengers count as unsatisfied.
         """
-        n_pref = int(merged["paid_window"].sum())
-        if n_pref == 0:
+        scores = []
+
+        # --- Window preference ---
+        if "paid_window" in merged.columns:
+            n_window = int(merged["paid_window"].astype(bool).sum())
+            if n_window > 0:
+                type_map = pd.Series(
+                    {s: info.get("seat_type", "") for s, info in ac2_seat_info.items()}
+                )
+                win_assigned = assigned[assigned["paid_window"].astype(bool)].copy()
+                if win_assigned.empty:
+                    scores.append(0.0)
+                else:
+                    win_assigned["ac2_seat_type"] = win_assigned["seat_ac2"].map(type_map)
+                    scores.append(
+                        int((win_assigned["ac2_seat_type"] == "window").sum()) / n_window
+                    )
+
+        # --- Legroom preference ---
+        if "paid_legroom" in merged.columns:
+            n_legroom = int(merged["paid_legroom"].astype(bool).sum())
+            if n_legroom > 0:
+                legroom_map = pd.Series(
+                    {s: bool(info.get("extra_legroom", False)) for s, info in ac2_seat_info.items()}
+                )
+                leg_assigned = assigned[assigned["paid_legroom"].astype(bool)].copy()
+                if leg_assigned.empty:
+                    scores.append(0.0)
+                else:
+                    leg_assigned["ac2_extra_legroom"] = leg_assigned["seat_ac2"].map(legroom_map)
+                    scores.append(
+                        int(leg_assigned["ac2_extra_legroom"].astype(bool).sum()) / n_legroom
+                    )
+
+        if not scores:
             return 1.0
-        if assigned.empty:
-            return 0.0
-        type_map = pd.Series({s: info["seat_type"] for s, info in ac2_seat_info.items()})
-        pref_assigned = assigned[assigned["paid_window"].astype(bool)].copy()
-        if pref_assigned.empty:
-            return 0.0
-        pref_assigned["ac2_seat_type"] = pref_assigned["seat_ac2"].map(type_map)
-        return int((pref_assigned["ac2_seat_type"] == "window").sum()) / n_pref
+        return sum(scores) / len(scores)

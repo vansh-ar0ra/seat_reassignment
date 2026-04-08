@@ -1,0 +1,21 @@
+passenger_id,name,seat_ac1,cabin,paid_window,paid_legroom
+PAX-001,Aarav Sharma,1A,business,True,True
+PAX-002,Priya Patel,1B,business,False,True
+PAX-003,Rohan Gupta,1C,business,False,False
+PAX-004,Ananya Singh,1D,business,True,False
+PAX-005,Vikram Mehta,2A,business,False,True
+PAX-006,Deepa Nair,2B,business,False,False
+PAX-007,Arjun Kumar,2C,business,False,False
+PAX-008,Shreya Iyer,2D,business,True,False
+PAX-009,Rahul Verma,3A,economy,True,True
+PAX-010,Kavya Reddy,3B,economy,False,True
+PAX-011,Aditya Joshi,3C,economy,False,False
+PAX-012,Pooja Agarwal,3D,economy,False,True
+PAX-013,Kiran Rao,3E,economy,False,False
+PAX-014,Neha Mishra,3F,economy,True,False
+PAX-015,Suresh Pillai,4A,economy,True,False
+PAX-016,Riya Desai,4B,economy,False,False
+PAX-017,Arun Pandey,4C,economy,False,False
+PAX-018,Divya Chopra,4D,economy,False,False
+PAX-019,Manish Kapoor,4E,economy,False,False
+PAX-020,Sana Bose,4F,economy,False,False

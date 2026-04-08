@@ -9,9 +9,9 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "airline_reassignment"
+name = "seat_reassignment"
 version = "0.1.0"
-description = "Airline Reassignment Inference environment for OpenEnv"
+description = "Seat Reassignment Inference environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     "google-generativeai>=0.8.6",
@@ -32,13 +32,13 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m airline_reassignment.server.app
-server = "airline_reassignment.server.app:main"
+# or: python -m seat_reassignment.server.app
+server = "seat_reassignment.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["airline_reassignment", "airline_reassignment.server"]
-package-dir = { "airline_reassignment" = ".", "airline_reassignment.server" = "server" }
+packages = ["seat_reassignment", "seat_reassignment.server"]
+package-dir = { "seat_reassignment" = ".", "seat_reassignment.server" = "server" }
 
 [tool.setuptools.package-data]
-airline_reassignment = ["data/**/*.json", "data/**/*.csv"]
+seat_reassignment = ["data/**/*.json", "data/**/*.csv"]

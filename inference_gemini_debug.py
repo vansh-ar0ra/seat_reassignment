@@ -12,8 +12,8 @@ import google.generativeai as genai
 # Load .env from the project root (one level up from this file's directory)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from client import AirlineReassignmentEnv
-from models import AirlineReassignmentAction
+from client import SeatReassignmentEnv
+from models import SeatReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -31,7 +31,7 @@ else:
 # Constants
 # ---------------------------------------------------------------------------
 TASK_NAME = "seat_reassignment"
-BENCHMARK = "airline_reassignment"
+BENCHMARK = "seat_reassignment"
 MAX_STEPS = 60
 TEMPERATURE = 0.3
 MAX_TOKENS = 1000
@@ -286,7 +286,7 @@ async def main() -> None:
         system_instruction=SYSTEM_PROMPT
     )
 
-    env = AirlineReassignmentEnv(base_url="http://localhost:8000")
+    env = SeatReassignmentEnv(base_url="http://localhost:8000")
 
     rewards: List[float] = []
     steps_taken = 0
@@ -321,7 +321,7 @@ async def main() -> None:
             print(f"\n--- Step {step} ---", flush=True)
             print(f"  Action: {action_summary}", flush=True)
 
-            result = await env.step(AirlineReassignmentAction(
+            result = await env.step(SeatReassignmentAction(
                 tool_name=action_dict["tool_name"],
                 args=action_dict["args"],
             ))

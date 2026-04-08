@@ -1,9 +1,9 @@
 """
-Pydantic models for the Airline Reassignment environment.
+Pydantic models for the Seat Reassignment environment.
 
-AirlineReassignmentAction    — what the agent sends on every step()
-AirlineReassignmentObservation — what the environment returns to the agent
-AirlineReassignmentState     — episode-level metadata (returned by state property)
+SeatReassignmentAction    — what the agent sends on every step()
+SeatReassignmentObservation — what the environment returns to the agent
+SeatReassignmentState     — episode-level metadata (returned by state property)
 """
 
 from typing import Dict, List, Optional
@@ -12,7 +12,7 @@ from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 
 
-class AirlineReassignmentAction(Action):
+class SeatReassignmentAction(Action):
     """
     Agent action — a tool call with its named arguments.
 
@@ -30,7 +30,7 @@ class AirlineReassignmentAction(Action):
     )
 
 
-class AirlineReassignmentObservation(Observation):
+class SeatReassignmentObservation(Observation):
     """
     Observation returned to the agent after every reset() and step().
 
@@ -89,7 +89,7 @@ class AirlineReassignmentObservation(Observation):
 
 
 
-class AirlineReassignmentState(State):
+class SeatReassignmentState(State):
     """
     Episode-level metadata returned by the state property.
 

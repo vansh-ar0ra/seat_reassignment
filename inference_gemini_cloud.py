@@ -11,7 +11,7 @@ import google.generativeai as genai
 # Load .env from the project root (one level up from this file's directory)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from airline_reassignment import AirlineReassignmentEnv, AirlineReassignmentAction
+from seat_reassignment import SeatReassignmentEnv, SeatReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -19,7 +19,7 @@ from airline_reassignment import AirlineReassignmentEnv, AirlineReassignmentActi
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME") or "gemini-2.5-pro"
 IMAGE_NAME = os.getenv("IMAGE_NAME")
-SPACE_URL = os.getenv("ENV_URL", "https://vansh-ar-0-ra-airline-reassignment.hf.space")
+SPACE_URL = os.getenv("ENV_URL", "https://vansh-ar-0-ra-seat-reassignment.hf.space")
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
@@ -29,7 +29,7 @@ else:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-BENCHMARK = "airline_reassignment"
+BENCHMARK = "seat_reassignment"
 TEMPERATURE = 0.3
 MAX_TOKENS = 1000
 
@@ -121,12 +121,67 @@ IMPORTANT:
 - Each tool call is one step. You have a maximum of 60 steps.
 - You can see the current state of both aircraft after each step."""
 
+HARD_SYSTEM_PROMPT = """You are an airline operations agent. An aircraft swap has occurred — all 20 passengers from Aircraft-1 (AC-1) must be reassigned to Aircraft-2 (AC-2). The two aircraft have the same number of seats per cabin class but different seating layouts.
+
+YOUR GOAL:
+Reassign every passenger from AC-1 to AC-2 while satisfying ALL THREE constraints:
+1. Cabin class — business passengers must stay in business, economy in economy
+2. Window seat preference — passengers who paid for a window seat (paid_window=True) must get a window seat on AC-2
+3. Extra legroom preference — passengers who paid for extra legroom (paid_legroom=True) must get a seat with extra_legroom=True on AC-2
+
+LEGROOM SEATS — CRITICAL DIFFERENCE BETWEEN AC-1 AND AC-2:
+- On AC-1: extra legroom is in row 1 (business) and row 3 (economy)
+- On AC-2: extra legroom is in row 2 (business: 2A, 2B, 2C, 2D) and only seats 4A, 4B, 4H (economy)
+- There are EXACTLY 3 economy legroom seats for 3 economy paid-legroom passengers. Do not waste a legroom seat on a passenger who didn't pay for it.
+
+TOOLS AVAILABLE:
+You have three tools. Each turn you must call exactly one tool.
+
+1. get_passenger_details(seat_id)
+   - Fetches the passenger info for an AC-1 seat
+   - Returns: passenger_id, name, cabin, paid_window, paid_legroom, current_seat_type, current_seat_extra_legroom
+   - Use this BEFORE assigning to learn passenger preferences
+
+2. assign_seat(passenger_id, target_seat_id)
+   - Moves a passenger from AC-1 to a specific AC-2 seat
+   - Returns: confirmation with cabin_match, window_preference_satisfied, legroom_preference_satisfied
+
+3. swap_seats(passenger_id_1, passenger_id_2)
+   - Swaps two passengers who are BOTH already on AC-2
+   - Use to fix earlier mistakes
+
+ACTION FORMAT:
+Respond with ONLY a raw JSON object and absolutely no other text.
+Do not include any reasoning, conversational text, or explanations.
+Do NOT use markdown code blocks (e.g., ```json or ```). Respond ONLY with the JSON itself.
+Examples:
+{"tool_name": "get_passenger_details", "args": {"seat_id": "1A"}}
+{"tool_name": "assign_seat", "args": {"passenger_id": "PAX-003", "target_seat_id": "3A"}}
+{"tool_name": "swap_seats", "args": {"passenger_id_1": "PAX-003", "passenger_id_2": "PAX-007"}}
+
+STRATEGY:
+1. Fetch details for all passengers — especially those with paid_legroom since legroom seats are scarce on AC-2.
+2. Plan legroom assignments first: assign paid_legroom+paid_window passengers to legroom window seats (e.g., 2A/2D business, 4A/4H economy).
+3. Assign remaining paid_legroom passengers to other legroom seats (2B/2C business, 4B economy).
+4. Assign paid_window-only passengers to window seats (1A/1D business, 3A/3H/4A/4H economy).
+5. Fill all remaining passengers by cabin class.
+6. Use swap_seats to fix any misplacements.
+
+IMPORTANT:
+- Never assign a business passenger to an economy seat or vice versa.
+- Legroom economy seats on AC-2: 4A (window), 4B (aisle), 4H (window). Only 3 seats!
+- Legroom business seats on AC-2: 2A, 2B, 2C, 2D (all row 2). Row 1 has NO legroom.
+- Window seats on AC-2: business 1A, 1D, 2A, 2D. Economy 3A, 3H, 4A, 4H.
+- Each tool call is one step. You have a maximum of 90 steps.
+- You can see the current state of both aircraft after each step."""
+
 # ---------------------------------------------------------------------------
 # Task definitions: (task_name, task_id, system_prompt, max_steps)
 # ---------------------------------------------------------------------------
 TASKS = [
     ("task_easy",   "easy",   EASY_SYSTEM_PROMPT,   24),
     ("task_medium", "medium", MEDIUM_SYSTEM_PROMPT, 60),
+    ("task_hard",   "hard",   HARD_SYSTEM_PROMPT,   90),
 ]
 
 # ---------------------------------------------------------------------------
@@ -135,6 +190,8 @@ TASKS = [
 def format_main_task(task_id: str) -> str:
     if task_id == "easy":
         return "Task: Reassign all 8 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2), respecting cabin class."
+    if task_id == "hard":
+        return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2) respecting cabin class, window seat preferences, and extra legroom preferences."
     return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2)."
 
 def format_state(obs) -> str:
@@ -297,7 +354,7 @@ async def run_task(
     )
 
     print(f"[INFO] Connecting to hosted environment: {SPACE_URL}", flush=True)
-    env = AirlineReassignmentEnv(base_url=SPACE_URL)
+    env = SeatReassignmentEnv(base_url=SPACE_URL)
 
     rewards: List[float] = []
     steps_taken = 0
@@ -329,7 +386,7 @@ async def run_task(
             print(f"\n--- Step {step} ---", flush=True)
             print(f"  Action: {action_summary}", flush=True)
 
-            result = await env.step(AirlineReassignmentAction(
+            result = await env.step(SeatReassignmentAction(
                 tool_name=action_dict["tool_name"],
                 args=action_dict["args"],
             ))

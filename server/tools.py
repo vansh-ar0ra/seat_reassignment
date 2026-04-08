@@ -9,8 +9,8 @@ expected to have the following attributes (populated at reset() time):
     state.passengers_by_id  Dict[str, dict]  passenger_id → passenger row
     state.ac1_seat_set      Set[str]         valid AC-1 seat IDs
     state.ac2_seat_set      Set[str]         valid AC-2 seat IDs
-    state.ac1_seat_info     Dict[str, dict]  AC-1 seat_id → {cabin, seat_type}
-    state.ac2_seat_info     Dict[str, dict]  AC-2 seat_id → {cabin, seat_type}
+    state.ac1_seat_info     Dict[str, dict]  AC-1 seat_id → {cabin, seat_type[, extra_legroom]}
+    state.ac2_seat_info     Dict[str, dict]  AC-2 seat_id → {cabin, seat_type[, extra_legroom]}
     state.fetched_seats     Set[str]         AC-1 seats already queried
 
 All functions return a dict with a "status" key ("success" or "error").
@@ -25,13 +25,25 @@ import pandas as pd
 # Internal helper
 # ---------------------------------------------------------------------------
 
-def _preference_satisfied(passenger: dict, seat_type: str):
+def _preference_satisfied(passenger: dict, seat_info: dict) -> tuple:
     """
-    Returns True/False if the passenger paid for a window seat, None otherwise.
+    Returns (window_satisfied, legroom_satisfied).
+
+    Each element is:
+      True  — passenger paid for this pref and it is satisfied
+      False — passenger paid for this pref and it is NOT satisfied
+      None  — passenger did not pay for this pref (not applicable)
+
+    Gracefully handles passengers without paid_legroom (easy/medium tasks):
+      passenger.get("paid_legroom", False) defaults to False → legroom=None.
     """
-    if not passenger["paid_window"]:
-        return None
-    return seat_type == "window"
+    window_paid  = passenger.get("paid_window",  False)
+    legroom_paid = passenger.get("paid_legroom", False)
+
+    window  = (seat_info.get("seat_type", "") == "window") if window_paid  else None
+    legroom = bool(seat_info.get("extra_legroom", False))  if legroom_paid else None
+
+    return window, legroom
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +59,7 @@ def tool_get_passenger_details(state, seat_id: str) -> dict:
     """
     if seat_id not in state.ac1_seat_set:
         return {
-            "status": "error",
+            "status":  "error",
             "message": f"Seat {seat_id} does not exist on AC-1",
         }
 
@@ -59,7 +71,7 @@ def tool_get_passenger_details(state, seat_id: str) -> dict:
 
     if pd.notna(seat_ac2):
         return {
-            "status": "error",
+            "status":  "error",
             "message": (
                 f"Seat {seat_id} on AC-1 is now empty — "
                 f"passenger already reassigned to AC-2 seat {seat_ac2}"
@@ -69,15 +81,21 @@ def tool_get_passenger_details(state, seat_id: str) -> dict:
     pax = state.passengers_by_id[passenger_id]
     state.fetched_seats.add(seat_id)
 
-    return {
-        "status": "success",
-        "passenger_id": passenger_id,
-        "name": pax["name"],
-        "cabin": pax["cabin"],
-        "paid_window": pax["paid_window"],
+    result = {
+        "status":           "success",
+        "passenger_id":     passenger_id,
+        "name":             pax["name"],
+        "cabin":            pax["cabin"],
+        "paid_window":      pax.get("paid_window",  False),
+        "paid_legroom":     pax.get("paid_legroom", False),
         "current_seat_ac1": seat_id,
         "current_seat_type": state.ac1_seat_info[seat_id]["seat_type"],
     }
+    # Include extra_legroom of current AC-1 seat when available
+    if "extra_legroom" in state.ac1_seat_info[seat_id]:
+        result["current_seat_extra_legroom"] = state.ac1_seat_info[seat_id]["extra_legroom"]
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +111,7 @@ def tool_assign_seat(state, passenger_id: str, target_seat_id: str) -> dict:
     # 1. Passenger must exist
     if passenger_id not in state.passengers_by_id:
         return {
-            "status": "error",
+            "status":  "error",
             "message": f"Passenger {passenger_id} does not exist",
         }
 
@@ -101,14 +119,14 @@ def tool_assign_seat(state, passenger_id: str, target_seat_id: str) -> dict:
     seat_ac2 = state.assignments.loc[passenger_id, "seat_ac2"]
     if pd.notna(seat_ac2):
         return {
-            "status": "error",
+            "status":  "error",
             "message": f"Passenger {passenger_id} is already assigned to AC-2 seat {seat_ac2}",
         }
 
     # 3. Target seat must exist on AC-2
     if target_seat_id not in state.ac2_seat_set:
         return {
-            "status": "error",
+            "status":  "error",
             "message": f"Seat {target_seat_id} does not exist on AC-2",
         }
 
@@ -118,16 +136,16 @@ def tool_assign_seat(state, passenger_id: str, target_seat_id: str) -> dict:
     if not occupied.empty:
         occupant_id = occupied.index[0]
         return {
-            "status": "error",
+            "status":  "error",
             "message": f"Seat {target_seat_id} on AC-2 is already occupied by {occupant_id}",
         }
 
-    pax = state.passengers_by_id[passenger_id]
+    pax      = state.passengers_by_id[passenger_id]
     from_seat = state.assignments.loc[passenger_id, "seat_ac1"]
-    ac2_seat = state.ac2_seat_info[target_seat_id]
+    ac2_seat  = state.ac2_seat_info[target_seat_id]
 
     cabin_match = pax["cabin"] == ac2_seat["cabin"]
-    preference_satisfied = _preference_satisfied(pax, ac2_seat["seat_type"])
+    window_pref, legroom_pref = _preference_satisfied(pax, ac2_seat)
 
     # Commit the assignment.
     # seat_ac2 is loaded as float64 (all-NaN column from CSV); upcast to object
@@ -137,12 +155,13 @@ def tool_assign_seat(state, passenger_id: str, target_seat_id: str) -> dict:
     state.assignments.loc[passenger_id, "seat_ac2"] = target_seat_id
 
     return {
-        "status": "success",
-        "passenger_id": passenger_id,
-        "from_seat_ac1": from_seat,
-        "to_seat_ac2": target_seat_id,
-        "cabin_match": cabin_match,
-        "preference_satisfied": preference_satisfied,
+        "status":                       "success",
+        "passenger_id":                 passenger_id,
+        "from_seat_ac1":                from_seat,
+        "to_seat_ac2":                  target_seat_id,
+        "cabin_match":                  cabin_match,
+        "window_preference_satisfied":  window_pref,
+        "legroom_preference_satisfied": legroom_pref,
     }
 
 
@@ -160,14 +179,14 @@ def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
     for pid in (passenger_id_1, passenger_id_2):
         if pid not in state.passengers_by_id:
             return {
-                "status": "error",
+                "status":  "error",
                 "message": f"Passenger {pid} does not exist",
             }
 
     # 2. Must be two distinct passengers
     if passenger_id_1 == passenger_id_2:
         return {
-            "status": "error",
+            "status":  "error",
             "message": "Cannot swap a passenger with themselves",
         }
 
@@ -175,7 +194,7 @@ def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
     for pid in (passenger_id_1, passenger_id_2):
         if pd.isna(state.assignments.loc[pid, "seat_ac2"]):
             return {
-                "status": "error",
+                "status":  "error",
                 "message": f"Passenger {pid} is not yet assigned to AC-2",
             }
 
@@ -188,8 +207,8 @@ def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
     # Metrics before the swap
     cabin_match_1_before = pax1["cabin"] == state.ac2_seat_info[seat1]["cabin"]
     cabin_match_2_before = pax2["cabin"] == state.ac2_seat_info[seat2]["cabin"]
-    pref_1_before = _preference_satisfied(pax1, state.ac2_seat_info[seat1]["seat_type"])
-    pref_2_before = _preference_satisfied(pax2, state.ac2_seat_info[seat2]["seat_type"])
+    win1_before,  leg1_before  = _preference_satisfied(pax1, state.ac2_seat_info[seat1])
+    win2_before,  leg2_before  = _preference_satisfied(pax2, state.ac2_seat_info[seat2])
 
     # Execute the swap
     state.assignments.loc[passenger_id_1, "seat_ac2"] = seat2
@@ -198,8 +217,8 @@ def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
     # Metrics after the swap (pax1 is now in seat2, pax2 in seat1)
     cabin_match_1_after = pax1["cabin"] == state.ac2_seat_info[seat2]["cabin"]
     cabin_match_2_after = pax2["cabin"] == state.ac2_seat_info[seat1]["cabin"]
-    pref_1_after = _preference_satisfied(pax1, state.ac2_seat_info[seat2]["seat_type"])
-    pref_2_after = _preference_satisfied(pax2, state.ac2_seat_info[seat1]["seat_type"])
+    win1_after,  leg1_after  = _preference_satisfied(pax1, state.ac2_seat_info[seat2])
+    win2_after,  leg2_after  = _preference_satisfied(pax2, state.ac2_seat_info[seat1])
 
     return {
         "status": "success",
@@ -209,16 +228,20 @@ def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
         ],
         "improvement": {
             passenger_id_1: {
-                "cabin_match_before": cabin_match_1_before,
-                "cabin_match_after": cabin_match_1_after,
-                "preference_before": pref_1_before,
-                "preference_after": pref_1_after,
+                "cabin_match_before":            cabin_match_1_before,
+                "cabin_match_after":             cabin_match_1_after,
+                "window_preference_before":      win1_before,
+                "window_preference_after":       win1_after,
+                "legroom_preference_before":     leg1_before,
+                "legroom_preference_after":      leg1_after,
             },
             passenger_id_2: {
-                "cabin_match_before": cabin_match_2_before,
-                "cabin_match_after": cabin_match_2_after,
-                "preference_before": pref_2_before,
-                "preference_after": pref_2_after,
+                "cabin_match_before":            cabin_match_2_before,
+                "cabin_match_after":             cabin_match_2_after,
+                "window_preference_before":      win2_before,
+                "window_preference_after":       win2_after,
+                "legroom_preference_before":     leg2_before,
+                "legroom_preference_after":      leg2_after,
             },
         },
     }

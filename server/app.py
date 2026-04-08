@@ -1,7 +1,7 @@
 """
-FastAPI application for the Airline Reassignment Environment.
+FastAPI application for the Seat Reassignment Environment.
 
-Exposes the AirlineReassignmentEnvironment over HTTP and WebSocket endpoints
+Exposes the SeatReassignmentEnvironment over HTTP and WebSocket endpoints
 compatible with the OpenEnv EnvClient.
 
 Endpoints (all created automatically by create_app):
@@ -25,18 +25,18 @@ except ImportError:
     from openenv.core.env_server import create_fastapi_app as create_app  # type: ignore
 
 try:
-    from ..models import AirlineReassignmentAction, AirlineReassignmentObservation
-    from .environment import AirlineReassignmentEnvironment
+    from ..models import SeatReassignmentAction, SeatReassignmentObservation
+    from .environment import SeatReassignmentEnvironment
 except ImportError:
-    from models import AirlineReassignmentAction, AirlineReassignmentObservation
-    from server.environment import AirlineReassignmentEnvironment
+    from models import SeatReassignmentAction, SeatReassignmentObservation
+    from server.environment import SeatReassignmentEnvironment
 
 
 app = create_app(
-    AirlineReassignmentEnvironment,
-    AirlineReassignmentAction,
-    AirlineReassignmentObservation,
-    env_name="airline_reassignment",
+    SeatReassignmentEnvironment,
+    SeatReassignmentAction,
+    SeatReassignmentObservation,
+    env_name="seat_reassignment",
     max_concurrent_envs=int(os.environ.get("MAX_ENVS", "4")),
 )
 

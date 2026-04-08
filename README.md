@@ -1,5 +1,5 @@
 ---
-title: Airline Reassignment Environment
+title: Seat Reassignment Environment
 emoji: ✈️
 colorFrom: blue
 colorTo: green
@@ -11,9 +11,9 @@ tags:
   - openenv
 ---
 
-# OpenEnv Airline Reassignment Inference
+# OpenEnv Seat Reassignment Inference
 
-This project implements an OpenEnv-compatible server for a "Airline Reassignment" logic test, as well as an inference client script that solves it using Google's Gemini models.
+This project implements an OpenEnv-compatible server for a "Seat Reassignment" logic test, as well as an inference client script that solves it using Google's Gemini models.
 
 ## Prerequisites
 

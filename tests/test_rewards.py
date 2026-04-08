@@ -104,38 +104,43 @@ class TestRewardForFetch:
 # ===========================================================================
 
 class TestRewardForAssign:
-    def _result(self, cabin_match, preference_satisfied, status="success"):
-        return {"status": status, "cabin_match": cabin_match,
-                "preference_satisfied": preference_satisfied}
+    def _result(self, cabin_match, window_pref=None, legroom_pref=None, status="success"):
+        """Build a mock assign tool_result using the new field names."""
+        return {
+            "status":                       status,
+            "cabin_match":                  cabin_match,
+            "window_preference_satisfied":  window_pref,
+            "legroom_preference_satisfied": legroom_pref,
+        }
 
     def test_cabin_match_preference_satisfied(self, rc):
         reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, preference_satisfied=True))
+            self._result(cabin_match=True, window_pref=True))
         assert reward == REWARD_ASSIGN_CABIN_PREF
-        assert "preference satisfied" in reason.lower()
+        assert "all preferences satisfied" in reason.lower()
 
     def test_cabin_match_no_preference(self, rc):
         reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, preference_satisfied=None))
+            self._result(cabin_match=True, window_pref=None))
         assert reward == REWARD_ASSIGN_CABIN_NOPREF
-        assert "no window preference" in reason.lower()
+        assert "no preferences" in reason.lower()
 
     def test_cabin_match_preference_missed(self, rc):
         reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, preference_satisfied=False))
+            self._result(cabin_match=True, window_pref=False))
         assert reward == REWARD_ASSIGN_CABIN_PREFMISS
         assert "not satisfied" in reason.lower()
 
     def test_cabin_mismatch(self, rc):
         reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=False, preference_satisfied=None))
+            self._result(cabin_match=False, window_pref=None))
         assert reward == REWARD_ASSIGN_CABIN_MISMATCH
         assert "mismatch" in reason.lower()
 
     def test_cabin_mismatch_ignores_preference(self, rc):
-        """Cabin mismatch penalty applies even if preference_satisfied happens to be True."""
+        """Cabin mismatch penalty applies even if preference happens to be True."""
         reward, _ = rc.reward_for_assign(
-            self._result(cabin_match=False, preference_satisfied=True))
+            self._result(cabin_match=False, window_pref=True))
         assert reward == REWARD_ASSIGN_CABIN_MISMATCH
 
     def test_error_result(self, rc):
@@ -143,6 +148,39 @@ class TestRewardForAssign:
         reward, reason = rc.reward_for_assign(result)
         assert reward == REWARD_ASSIGN_ERROR
         assert "error" in reason.lower()
+
+    def test_both_prefs_satisfied(self, rc):
+        """Window + legroom both satisfied → PREF tier."""
+        reward, reason = rc.reward_for_assign(
+            self._result(cabin_match=True, window_pref=True, legroom_pref=True))
+        assert reward == REWARD_ASSIGN_CABIN_PREF
+        assert "all preferences satisfied" in reason.lower()
+
+    def test_partial_prefs_satisfied(self, rc):
+        """Window satisfied, legroom missed → NOPREF (partial) tier."""
+        reward, reason = rc.reward_for_assign(
+            self._result(cabin_match=True, window_pref=True, legroom_pref=False))
+        assert reward == REWARD_ASSIGN_CABIN_NOPREF
+        assert "some preferences satisfied" in reason.lower()
+
+    def test_both_prefs_missed(self, rc):
+        """Window + legroom both missed → PREFMISS tier."""
+        reward, reason = rc.reward_for_assign(
+            self._result(cabin_match=True, window_pref=False, legroom_pref=False))
+        assert reward == REWARD_ASSIGN_CABIN_PREFMISS
+        assert "not satisfied" in reason.lower()
+
+    def test_legroom_only_satisfied(self, rc):
+        """Only legroom paid, and satisfied → PREF tier."""
+        reward, reason = rc.reward_for_assign(
+            self._result(cabin_match=True, window_pref=None, legroom_pref=True))
+        assert reward == REWARD_ASSIGN_CABIN_PREF
+
+    def test_legroom_only_missed(self, rc):
+        """Only legroom paid, and missed → PREFMISS tier."""
+        reward, reason = rc.reward_for_assign(
+            self._result(cabin_match=True, window_pref=None, legroom_pref=False))
+        assert reward == REWARD_ASSIGN_CABIN_PREFMISS
 
 
 # ===========================================================================
@@ -373,3 +411,123 @@ class TestConstraintScore:
         pax  = {"cabin": "business", "paid_window": True}
         seat = {"cabin": "economy", "seat_type": "aisle"}
         assert self.rc._constraint_score(pax, seat) == pytest.approx(-0.5)
+
+
+# ===========================================================================
+# _constraint_score — legroom dimension
+# ===========================================================================
+
+class TestConstraintScoreLegroom:
+    def setup_method(self):
+        self.rc = RewardComputer(total_passengers=20, max_steps=60)
+
+    def test_paid_legroom_satisfied(self):
+        pax  = {"cabin": "business", "paid_window": False, "paid_legroom": True}
+        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": True}
+        # cabin +1.0, legroom +1.0
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(2.0)
+
+    def test_paid_legroom_missed(self):
+        pax  = {"cabin": "business", "paid_window": False, "paid_legroom": True}
+        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": False}
+        # cabin +1.0, legroom -0.5
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.5)
+
+    def test_both_prefs_satisfied(self):
+        pax  = {"cabin": "business", "paid_window": True, "paid_legroom": True}
+        seat = {"cabin": "business", "seat_type": "window", "extra_legroom": True}
+        # cabin +1.0, window +1.0, legroom +1.0
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(3.0)
+
+    def test_both_prefs_missed(self):
+        pax  = {"cabin": "business", "paid_window": True, "paid_legroom": True}
+        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": False}
+        # cabin +1.0, window -0.5, legroom -0.5
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.0)
+
+    def test_no_legroom_field_in_seat_defaults_false(self):
+        """Easy/medium seats don't have extra_legroom — score as if False."""
+        pax  = {"cabin": "economy", "paid_window": False, "paid_legroom": True}
+        seat = {"cabin": "economy", "seat_type": "window"}  # no extra_legroom key
+        # cabin +1.0, legroom -0.5 (defaults to False)
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.5)
+
+    def test_no_paid_legroom_in_passenger_defaults_false(self):
+        """Easy/medium passengers don't have paid_legroom — treated as not paid."""
+        pax  = {"cabin": "economy", "paid_window": False}  # no paid_legroom key
+        seat = {"cabin": "economy", "seat_type": "window", "extra_legroom": True}
+        # cabin +1.0 only
+        assert self.rc._constraint_score(pax, seat) == pytest.approx(1.0)
+
+
+# ===========================================================================
+# Grader score — hard task (both preference dimensions)
+# ===========================================================================
+
+class TestGraderScoreHard:
+    """Test grader_score when both paid_window and paid_legroom are present."""
+
+    def setup_method(self):
+        self.rc = RewardComputer(total_passengers=4, max_steps=20)
+
+    def _ac2(self):
+        return {
+            "B_WL": {"cabin": "business", "seat_type": "window",  "extra_legroom": True},
+            "B_AL": {"cabin": "business", "seat_type": "aisle",   "extra_legroom": True},
+            "E_W":  {"cabin": "economy",  "seat_type": "window",  "extra_legroom": False},
+            "E_A":  {"cabin": "economy",  "seat_type": "aisle",   "extra_legroom": False},
+        }
+
+    def _passengers(self):
+        return pd.DataFrame([
+            {"passenger_id": "H1", "name": "A", "seat_ac1": "1A", "cabin": "business",
+             "paid_window": True,  "paid_legroom": True},
+            {"passenger_id": "H2", "name": "B", "seat_ac1": "1B", "cabin": "business",
+             "paid_window": False, "paid_legroom": True},
+            {"passenger_id": "H3", "name": "C", "seat_ac1": "2A", "cabin": "economy",
+             "paid_window": True,  "paid_legroom": False},
+            {"passenger_id": "H4", "name": "D", "seat_ac1": "2B", "cabin": "economy",
+             "paid_window": False, "paid_legroom": False},
+        ])
+
+    def test_perfect_score(self):
+        pax = self._passengers()
+        asgn = _assignments({"H1": "B_WL", "H2": "B_AL", "H3": "E_W", "H4": "E_A"})
+        score = self.rc.grader_score(asgn, pax, self._ac2())
+        assert score == pytest.approx(1.0)
+
+    def test_window_missed_lowers_pref_score(self):
+        """H3 (paid_window) gets aisle seat → window_pref_score = 1/2."""
+        pax = self._passengers()
+        asgn = _assignments({"H1": "B_WL", "H2": "B_AL", "H3": "E_A", "H4": "E_W"})
+        score = self.rc.grader_score(asgn, pax, self._ac2())
+        # cabin: 4/4=1.0, window: H1→win✓ H3→aisle✗ = 1/2=0.5
+        # legroom: H1→leg✓ H2→leg✓ = 2/2=1.0 → pref=(0.5+1.0)/2=0.75
+        assert score == pytest.approx((1.0 + 0.75) / 2.0)
+
+    def test_legroom_missed_lowers_pref_score(self):
+        """H1+H2 (paid_legroom) get no-legroom seats → legroom_score=0."""
+        pax = self._passengers()
+        asgn = _assignments({"H1": "E_W", "H2": "E_A", "H3": "B_WL", "H4": "B_AL"})
+        score = self.rc.grader_score(asgn, pax, self._ac2())
+        # cabin: 0/4=0.0
+        # window: H1→E_W(win)✓ H3→B_WL(win)✓ = 2/2=1.0
+        # legroom: H1→E_W(no leg)✗ H2→E_A(no leg)✗ = 0/2=0.0 → pref=0.5
+        assert score == pytest.approx((0.0 + 0.5) / 2.0)
+
+    def test_no_prefs_equals_cabin_score(self):
+        """DataFrame with no paid preferences → grader_score == cabin_score."""
+        pax = pd.DataFrame([
+            {"passenger_id": "N1", "name": "A", "seat_ac1": "1A",
+             "cabin": "business", "paid_window": False, "paid_legroom": False},
+            {"passenger_id": "N2", "name": "B", "seat_ac1": "1B",
+             "cabin": "economy", "paid_window": False, "paid_legroom": False},
+        ])
+        rc = RewardComputer(total_passengers=2, max_steps=10)
+        ac2 = {
+            "B1": {"cabin": "business", "seat_type": "aisle", "extra_legroom": True},
+            "E1": {"cabin": "economy",  "seat_type": "aisle", "extra_legroom": True},
+        }
+        asgn = _assignments({"N1": "B1", "N2": "E1"})
+        score = rc.grader_score(asgn, pax, ac2)
+        assert score == pytest.approx(1.0)

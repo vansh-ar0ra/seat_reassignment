@@ -1,0 +1,43 @@
+{
+  "aircraft_id": "AC-2",
+  "layout": {
+    "business": {
+      "rows": [1, 2],
+      "columns": ["A", "B", "C", "D"],
+      "pattern": "1-2-1",
+      "extra_legroom_rows": [2]
+    },
+    "economy": {
+      "rows": [3, 4],
+      "columns": ["A", "B", "C", "D", "E", "F", "G", "H"],
+      "pattern": "2-4-2",
+      "extra_legroom_seats": ["4A", "4B", "4H"]
+    }
+  },
+  "seats": [
+    {"seat_id": "1A", "cabin": "business", "seat_type": "window",  "extra_legroom": false},
+    {"seat_id": "1B", "cabin": "business", "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "1C", "cabin": "business", "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "1D", "cabin": "business", "seat_type": "window",  "extra_legroom": false},
+    {"seat_id": "2A", "cabin": "business", "seat_type": "window",  "extra_legroom": true},
+    {"seat_id": "2B", "cabin": "business", "seat_type": "aisle",   "extra_legroom": true},
+    {"seat_id": "2C", "cabin": "business", "seat_type": "aisle",   "extra_legroom": true},
+    {"seat_id": "2D", "cabin": "business", "seat_type": "window",  "extra_legroom": true},
+    {"seat_id": "3A", "cabin": "economy",  "seat_type": "window",  "extra_legroom": false},
+    {"seat_id": "3B", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "3C", "cabin": "economy",  "seat_type": "middle",  "extra_legroom": false},
+    {"seat_id": "3D", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "3E", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "3F", "cabin": "economy",  "seat_type": "middle",  "extra_legroom": false},
+    {"seat_id": "3G", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "3H", "cabin": "economy",  "seat_type": "window",  "extra_legroom": false},
+    {"seat_id": "4A", "cabin": "economy",  "seat_type": "window",  "extra_legroom": true},
+    {"seat_id": "4B", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": true},
+    {"seat_id": "4C", "cabin": "economy",  "seat_type": "middle",  "extra_legroom": false},
+    {"seat_id": "4D", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "4E", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "4F", "cabin": "economy",  "seat_type": "middle",  "extra_legroom": false},
+    {"seat_id": "4G", "cabin": "economy",  "seat_type": "aisle",   "extra_legroom": false},
+    {"seat_id": "4H", "cabin": "economy",  "seat_type": "window",  "extra_legroom": true}
+  ]
+}

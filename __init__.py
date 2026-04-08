@@ -1,11 +1,11 @@
-"""Airline Reassignment Environment."""
+"""Seat Reassignment Environment."""
 
-from .client import AirlineReassignmentEnv
-from .models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
+from .client import SeatReassignmentEnv
+from .models import SeatReassignmentAction, SeatReassignmentObservation, SeatReassignmentState
 
 __all__ = [
-    "AirlineReassignmentAction",
-    "AirlineReassignmentObservation",
-    "AirlineReassignmentState",
-    "AirlineReassignmentEnv",
+    "SeatReassignmentAction",
+    "SeatReassignmentObservation",
+    "SeatReassignmentState",
+    "SeatReassignmentEnv",
 ]

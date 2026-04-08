@@ -20,11 +20,11 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
+    from ..models import SeatReassignmentAction, SeatReassignmentObservation, SeatReassignmentState
     from .tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
     from .rewards import RewardComputer
 except ImportError:
-    from models import AirlineReassignmentAction, AirlineReassignmentObservation, AirlineReassignmentState
+    from models import SeatReassignmentAction, SeatReassignmentObservation, SeatReassignmentState
     from server.tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
     from server.rewards import RewardComputer
 
@@ -67,7 +67,7 @@ class EpisodeState:
 # Environment
 # ---------------------------------------------------------------------------
 
-class AirlineReassignmentEnvironment(Environment):
+class SeatReassignmentEnvironment(Environment):
     """
     OpenEnv environment for airline seat reassignment.
 
@@ -89,7 +89,7 @@ class AirlineReassignmentEnvironment(Environment):
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, seed: Optional[int] = None, task_id: str = "medium") -> AirlineReassignmentObservation:
+    def reset(self, seed: Optional[int] = None, task_id: str = "medium") -> SeatReassignmentObservation:
         """Load data, build lookup dicts, and return the initial observation."""
         episode_id = str(uuid4())
         self._state = State(episode_id=episode_id, step_count=0)
@@ -122,11 +122,19 @@ class AirlineReassignmentEnvironment(Environment):
         )
         ac1_seat_set = set(seats_ac1_df["seat_id"])
         ac2_seat_set = set(seats_ac2_df["seat_id"])
+
+        # Include extra_legroom in seat_info if the CSV has that column
+        _ac1_cols = ["cabin", "seat_type"] + (
+            ["extra_legroom"] if "extra_legroom" in seats_ac1_df.columns else []
+        )
+        _ac2_cols = ["cabin", "seat_type"] + (
+            ["extra_legroom"] if "extra_legroom" in seats_ac2_df.columns else []
+        )
         ac1_seat_info: Dict[str, dict] = (
-            seats_ac1_df.set_index("seat_id")[["cabin", "seat_type"]].to_dict("index")
+            seats_ac1_df.set_index("seat_id")[_ac1_cols].to_dict("index")
         )
         ac2_seat_info: Dict[str, dict] = (
-            seats_ac2_df.set_index("seat_id")[["cabin", "seat_type"]].to_dict("index")
+            seats_ac2_df.set_index("seat_id")[_ac2_cols].to_dict("index")
         )
 
         total_passengers = len(passengers_df)
@@ -163,7 +171,7 @@ class AirlineReassignmentEnvironment(Environment):
             done=False,
         )
 
-    def step(self, action: AirlineReassignmentAction) -> AirlineReassignmentObservation:  # type: ignore[override]
+    def step(self, action: SeatReassignmentAction) -> SeatReassignmentObservation:  # type: ignore[override]
         """Execute one tool call and return the updated observation."""
         if self._episode is None:
             raise RuntimeError("step() called without reset()")
@@ -271,14 +279,14 @@ class AirlineReassignmentEnvironment(Environment):
         )
 
     @property
-    def state(self) -> AirlineReassignmentState:  # type: ignore[override]
+    def state(self) -> SeatReassignmentState:  # type: ignore[override]
         if self._episode is None:
-            return AirlineReassignmentState()
+            return SeatReassignmentState()
 
         ep = self._episode
         assigned_count = int(ep.assignments["seat_ac2"].notna().sum())
 
-        return AirlineReassignmentState(
+        return SeatReassignmentState(
             episode_id=self._state.episode_id,
             step_count=ep.step_count,
             total_passengers=len(ep.passengers_df),
@@ -298,7 +306,7 @@ class AirlineReassignmentEnvironment(Environment):
         reward: float,
         reward_reason: str,
         done: bool,
-    ) -> AirlineReassignmentObservation:
+    ) -> SeatReassignmentObservation:
         ep = self._episode
 
         # AC-1 seats whose passengers have NOT yet been moved
@@ -316,7 +324,7 @@ class AirlineReassignmentEnvironment(Environment):
         occupied_set = set(ac2_occupied.keys())
         ac2_available = sorted(s for s in ep.ac2_seat_set if s not in occupied_set)
 
-        return AirlineReassignmentObservation(
+        return SeatReassignmentObservation(
             ac1_layout=ep.ac1_config,
             ac2_layout=ep.ac2_config,
             ac1_seats_occupied=ac1_seats_occupied,

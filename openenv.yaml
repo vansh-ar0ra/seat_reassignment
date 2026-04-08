@@ -1,5 +1,5 @@
 spec_version: 1
-name: airline_reassignment
+name: seat_reassignment
 type: space
 runtime: fastapi
 app: server.app:app
