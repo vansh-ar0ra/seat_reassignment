@@ -21,6 +21,9 @@ dependencies = [
     "openenv-core[core]>=0.2.2",
     # Environment-specific dependencies
     "pandas>=2.0.0",
+    # Inference script dependencies
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
