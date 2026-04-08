@@ -2,15 +2,18 @@
 Integration tests for AirlineReassignmentEnvironment.
 
 Tests instantiate the environment directly — no server, no WebSocket.
-All 20 passengers and their AC-1 seat assignments are fixed by the data
-generation seed, so the expected values here are deterministic.
+All passengers and their AC-1 seat assignments are fixed by the static data files.
 
-AC-1 seat → passenger mapping (from data/passengers.csv, seed=42):
+Medium task (20 passengers, AC-1 seats rows 1-4):
   Business (rows 1-2):  PAX-001→1A, PAX-002→1B, PAX-003→1C, PAX-004→1D
                         PAX-005→2A, PAX-006→2B, PAX-007→2C, PAX-008→2D
   Economy  (rows 3-4):  PAX-009→3A, PAX-010→3B, PAX-011→3C, PAX-012→3D
                         PAX-013→3E, PAX-014→3F, PAX-015→4A, PAX-016→4B
                         PAX-017→4C, PAX-018→4D, PAX-019→4E, PAX-020→4F
+
+Easy task (8 passengers, AC-1 seats rows 1-2):
+  Business (row 1): PAX-E001→1A, PAX-E002→1B, PAX-E003→1C, PAX-E004→1D
+  Economy  (row 2): PAX-E005→2A, PAX-E006→2B, PAX-E007→2C, PAX-E008→2D
 
 Run with: pytest tests/test_environment.py -v
 """
@@ -25,9 +28,9 @@ from server.environment import AirlineReassignmentEnvironment
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_env() -> AirlineReassignmentEnvironment:
+def make_env(task_id: str = "medium") -> AirlineReassignmentEnvironment:
     env = AirlineReassignmentEnvironment()
-    env.reset()
+    env.reset(task_id=task_id)
     return env
 
 
@@ -50,13 +53,13 @@ def swap(env, pid1: str, pid2: str) -> AirlineReassignmentObservation:
 
 
 # ---------------------------------------------------------------------------
-# 1. Reset produces a valid initial observation
+# 1. Reset produces a valid initial observation (medium task)
 # ---------------------------------------------------------------------------
 
 class TestReset:
     def test_basic_fields(self):
         env = AirlineReassignmentEnvironment()
-        obs = env.reset()
+        obs = env.reset(task_id="medium")
 
         assert obs.done is False
         assert obs.reward == 0.0
@@ -68,29 +71,34 @@ class TestReset:
 
     def test_all_ac1_seats_occupied(self):
         env = AirlineReassignmentEnvironment()
-        obs = env.reset()
+        obs = env.reset(task_id="medium")
         assert len(obs.ac1_seats_occupied) == 20
 
     def test_ac2_starts_empty(self):
         env = AirlineReassignmentEnvironment()
-        obs = env.reset()
+        obs = env.reset(task_id="medium")
         assert obs.ac2_seat_assignments == {}
-        assert len(obs.ac2_seats_available) == 24  # AC-2 has 24 seats
+        assert len(obs.ac2_seats_available) == 24  # AC-2 medium has 24 seats
 
     def test_layouts_present(self):
         env = AirlineReassignmentEnvironment()
-        obs = env.reset()
+        obs = env.reset(task_id="medium")
         assert obs.ac1_layout.get("aircraft_id") == "AC-1"
         assert obs.ac2_layout.get("aircraft_id") == "AC-2"
 
     def test_max_steps_is_three_times_passengers(self):
         env = AirlineReassignmentEnvironment()
-        obs = env.reset()
+        obs = env.reset(task_id="medium")
         assert obs.max_steps == 60  # 3 × 20
+
+    def test_unknown_task_raises(self):
+        env = AirlineReassignmentEnvironment()
+        with pytest.raises(ValueError, match="Unknown task_id"):
+            env.reset(task_id="nonexistent")
 
 
 # ---------------------------------------------------------------------------
-# 2. Fetch then assign — happy path
+# 2. Fetch then assign — happy path (medium task)
 # ---------------------------------------------------------------------------
 
 class TestFetchThenAssign:
@@ -145,10 +153,7 @@ class TestFetchThenAssign:
         obs2 = assign(env, "PAX-002", "1B")
         assert obs2.cumulative_reward == pytest.approx(obs1.reward + obs2.reward)
 
-    def test_grader_score_none_after_reset(self):
-        env = AirlineReassignmentEnvironment()
-        obs = env.reset()
-        assert obs.grader_score is None
+
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +218,6 @@ class TestSwap:
         swap(env, "PAX-001", "PAX-004")
         obs = env.step(AirlineReassignmentAction(tool_name="get_passenger_details", args={"seat_id": "1A"}))
         # After swap: PAX-001 should be in 1D, PAX-004 in 1B
-        # Reading observation ac2_seat_assignments
         assert obs.ac2_seat_assignments.get("1D") == "PAX-001"
         assert obs.ac2_seat_assignments.get("1B") == "PAX-004"
 
@@ -233,11 +237,11 @@ class TestSwap:
 
 
 # ---------------------------------------------------------------------------
-# 6. Episode completion — all 20 passengers assigned
+# 6. Episode completion — all 20 passengers assigned (medium task)
 # ---------------------------------------------------------------------------
 
 # Known valid assignments that respect cabin constraints
-FULL_ASSIGNMENTS = {
+FULL_ASSIGNMENTS_MEDIUM = {
     # Business passengers → AC-2 business seats
     "PAX-001": "1A", "PAX-002": "1B", "PAX-003": "1C", "PAX-004": "1D",
     "PAX-005": "2A", "PAX-006": "2B", "PAX-007": "2C", "PAX-008": "2D",
@@ -251,9 +255,9 @@ FULL_ASSIGNMENTS = {
 class TestEpisodeCompletion:
     def _run_full_episode(self) -> AirlineReassignmentObservation:
         env = AirlineReassignmentEnvironment()
-        env.reset()
+        env.reset(task_id="medium")
         obs = None
-        for pid, seat in FULL_ASSIGNMENTS.items():
+        for pid, seat in FULL_ASSIGNMENTS_MEDIUM.items():
             obs = assign(env, pid, seat)
         return obs
 
@@ -268,21 +272,13 @@ class TestEpisodeCompletion:
     def test_terminal_reward_included(self):
         obs = self._run_full_episode()
         assert obs.reward is not None
-        # Last step reward = step reward + terminal_reward; terminal should be positive
         assert obs.reward > 0
 
     def test_grader_score_in_observation(self):
         obs = self._run_full_episode()
-        assert obs.grader_score is not None
-        assert 0.0 <= obs.grader_score <= 1.0
-
-    def test_grader_score_present_mid_episode(self):
-        env = AirlineReassignmentEnvironment()
-        env.reset()
-        obs = assign(env, "PAX-001", "1A")
-        # Grader score should be live after any step, not just at episode end
-        assert obs.grader_score is not None
-        assert 0.0 <= obs.grader_score <= 1.0
+        assert obs.tool_result is not None
+        assert "grader_score" in obs.tool_result
+        assert 0.0 <= obs.tool_result["grader_score"] <= 1.0
 
     def test_terminal_breakdown_present(self):
         obs = self._run_full_episode()
@@ -299,30 +295,29 @@ class TestEpisodeCompletion:
 
     def test_state_is_complete(self):
         env = AirlineReassignmentEnvironment()
-        env.reset()
-        for pid, seat in FULL_ASSIGNMENTS.items():
+        env.reset(task_id="medium")
+        for pid, seat in FULL_ASSIGNMENTS_MEDIUM.items():
             assign(env, pid, seat)
         assert env.state.is_complete is True
 
     def test_step_after_done_raises(self):
         env = AirlineReassignmentEnvironment()
-        env.reset()
-        for pid, seat in FULL_ASSIGNMENTS.items():
+        env.reset(task_id="medium")
+        for pid, seat in FULL_ASSIGNMENTS_MEDIUM.items():
             assign(env, pid, seat)
         with pytest.raises(RuntimeError, match="terminated"):
             assign(env, "PAX-001", "1A")
 
 
 # ---------------------------------------------------------------------------
-# 7. Step limit — episode terminates at max_steps
+# 7. Step limit — episode terminates at max_steps (medium task)
 # ---------------------------------------------------------------------------
 
 class TestStepLimit:
     def test_episode_terminates_at_max_steps(self):
         env = AirlineReassignmentEnvironment()
-        env.reset()
+        env.reset(task_id="medium")
         obs = None
-        # Fetch seat 1A on every step — redundant after the first
         for _ in range(60):
             obs = fetch(env, "1A")
         assert obs.done is True
@@ -330,18 +325,141 @@ class TestStepLimit:
 
     def test_incomplete_penalty_applied(self):
         env = AirlineReassignmentEnvironment()
-        env.reset()
+        env.reset(task_id="medium")
         for _ in range(60):
             fetch(env, "1A")
-        # State should reflect 0 assignments
         s = env.state
         assert s.passengers_assigned == 0
-        assert s.is_complete is True  # done=True even though incomplete
+        assert s.is_complete is True
 
     def test_timeout_reason_in_observation(self):
         env = AirlineReassignmentEnvironment()
-        env.reset()
+        env.reset(task_id="medium")
         obs = None
         for _ in range(60):
             obs = fetch(env, "1A")
         assert "timed out" in obs.reward_reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# 8. Easy task
+# ---------------------------------------------------------------------------
+
+# Valid assignments for easy task — all 8 passengers, cabin class respected
+FULL_ASSIGNMENTS_EASY = {
+    # Business passengers → AC-2 business seats (1A–1D)
+    "PAX-E001": "1A",
+    "PAX-E002": "1B",
+    "PAX-E003": "1C",
+    "PAX-E004": "1D",
+    # Economy passengers → AC-2 economy seats (2A–2F)
+    "PAX-E005": "2A",
+    "PAX-E006": "2B",
+    "PAX-E007": "2C",
+    "PAX-E008": "2D",
+}
+
+
+class TestEasyTask:
+    def test_reset_easy_basic_fields(self):
+        env = AirlineReassignmentEnvironment()
+        obs = env.reset(task_id="easy")
+
+        assert obs.done is False
+        assert obs.reward == 0.0
+        assert obs.passengers_remaining == 8
+        assert obs.passengers_total == 8
+        assert obs.tool_result is None
+        assert obs.reward_reason == "Episode started"
+        assert obs.step_count == 0
+
+    def test_easy_max_steps_is_24(self):
+        env = AirlineReassignmentEnvironment()
+        obs = env.reset(task_id="easy")
+        assert obs.max_steps == 24  # 3 × 8
+
+    def test_easy_ac1_has_8_occupied_seats(self):
+        env = AirlineReassignmentEnvironment()
+        obs = env.reset(task_id="easy")
+        assert len(obs.ac1_seats_occupied) == 8
+
+    def test_easy_ac2_starts_empty_with_10_seats(self):
+        env = AirlineReassignmentEnvironment()
+        obs = env.reset(task_id="easy")
+        assert obs.ac2_seat_assignments == {}
+        assert len(obs.ac2_seats_available) == 10  # AC-2 easy has 10 seats
+
+    def test_easy_layouts_present(self):
+        env = AirlineReassignmentEnvironment()
+        obs = env.reset(task_id="easy")
+        assert obs.ac1_layout.get("aircraft_id") == "AC-1"
+        assert obs.ac2_layout.get("aircraft_id") == "AC-2"
+
+    def test_easy_fetch_returns_no_paid_window(self):
+        env = make_env(task_id="easy")
+        obs = fetch(env, "1A")
+        assert obs.tool_result["status"] == "success"
+        assert obs.tool_result["passenger_id"] == "PAX-E001"
+        assert obs.tool_result["cabin"] == "business"
+        assert obs.tool_result["paid_window"] is False
+
+    def test_easy_assign_gives_no_preference_reason(self):
+        """Reward reason must not mention preference when paid_window is False."""
+        env = make_env(task_id="easy")
+        obs = assign(env, "PAX-E001", "1A")
+        assert obs.tool_result["status"] == "success"
+        assert obs.tool_result["preference_satisfied"] is None
+        assert "preference" not in obs.reward_reason.lower() or "no window preference" in obs.reward_reason.lower()
+
+    def test_easy_cabin_mismatch_penalised(self):
+        """Assigning a business passenger to an economy seat must give negative reward."""
+        env = make_env(task_id="easy")
+        obs = assign(env, "PAX-E001", "2A")  # PAX-E001 is business → economy seat
+        assert obs.tool_result["cabin_match"] is False
+        assert obs.reward < 0
+
+    def test_easy_full_episode_completes(self):
+        env = AirlineReassignmentEnvironment()
+        env.reset(task_id="easy")
+        obs = None
+        for pid, seat in FULL_ASSIGNMENTS_EASY.items():
+            obs = assign(env, pid, seat)
+        assert obs.done is True
+        assert obs.passengers_remaining == 0
+
+    def test_easy_grader_score_cabin_only(self):
+        """
+        With no paid_window passengers, grader_score == cabin_score.
+        A perfect cabin assignment → grader_score == 1.0.
+        """
+        env = AirlineReassignmentEnvironment()
+        env.reset(task_id="easy")
+        for pid, seat in FULL_ASSIGNMENTS_EASY.items():
+            obs = assign(env, pid, seat)
+
+        assert "grader_score" in obs.tool_result
+        assert obs.tool_result["grader_score"] == pytest.approx(1.0)
+
+    def test_easy_grader_score_in_range(self):
+        env = AirlineReassignmentEnvironment()
+        env.reset(task_id="easy")
+        for pid, seat in FULL_ASSIGNMENTS_EASY.items():
+            obs = assign(env, pid, seat)
+        score = obs.tool_result["grader_score"]
+        assert 0.0 <= score <= 1.0
+
+    def test_easy_step_limit_terminates(self):
+        env = AirlineReassignmentEnvironment()
+        env.reset(task_id="easy")
+        obs = None
+        for _ in range(24):
+            obs = fetch(env, "1A")
+        assert obs.done is True
+        assert obs.step_count == 24
+
+    def test_easy_state_is_complete_after_full_assignment(self):
+        env = AirlineReassignmentEnvironment()
+        env.reset(task_id="easy")
+        for pid, seat in FULL_ASSIGNMENTS_EASY.items():
+            assign(env, pid, seat)
+        assert env.state.is_complete is True

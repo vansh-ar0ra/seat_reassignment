@@ -41,4 +41,4 @@ packages = ["airline_reassignment", "airline_reassignment.server"]
 package-dir = { "airline_reassignment" = ".", "airline_reassignment.server" = "server" }
 
 [tool.setuptools.package-data]
-airline_reassignment = ["data/*.json", "data/*.csv"]
+airline_reassignment = ["data/**/*.json", "data/**/*.csv"]

@@ -11,8 +11,7 @@ import google.generativeai as genai
 # Load .env from the project root (one level up from this file's directory)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from client import AirlineReassignmentEnv
-from models import AirlineReassignmentAction
+from airline_reassignment import AirlineReassignmentEnv, AirlineReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -20,11 +19,12 @@ from models import AirlineReassignmentAction
 API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME") or "gemini-2.5-pro"
 IMAGE_NAME = os.getenv("IMAGE_NAME")
+SPACE_URL = os.getenv("ENV_URL", "https://vansh-ar-0-ra-airline-reassignment.hf.space")
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
 else:
-    print("[WARNING] GEMINI_API_KEY or API_KEY not found in environment.", file=__import__('sys').stderr)
+    print("[WARNING] GEMINI_API_KEY or API_KEY not found in environment.")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -244,12 +244,12 @@ def get_agent_action(
         parsed = parse_llm_response(response_text)
 
         if parsed is None:
-            print(f"[DEBUG] Failed to parse LLM response: {response_text[:200]}", file=__import__('sys').stderr, flush=True)
+            print(f"[DEBUG] Failed to parse LLM response: {response_text[:200]}", flush=True)
             return None
 
         return parsed
     except Exception as exc:
-        print(f"[DEBUG] LLM request failed: {exc}", file=__import__('sys').stderr, flush=True)
+        print(f"[DEBUG] LLM request failed: {exc}", flush=True)
         return None
 
 
@@ -279,7 +279,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,8 @@ async def run_task(
         system_instruction=system_prompt,
     )
 
-    env = AirlineReassignmentEnv(base_url="http://localhost:8000")
+    print(f"[INFO] Connecting to hosted environment: {SPACE_URL}", flush=True)
+    env = AirlineReassignmentEnv(base_url=SPACE_URL)
 
     rewards: List[float] = []
     steps_taken = 0
@@ -310,10 +311,9 @@ async def run_task(
         result = await env.reset(task_id=task_id)
         obs = result.observation
 
-        print(
-            f"[DEBUG] Task={task_name}: {obs.passengers_total} passengers, max_steps={obs.max_steps}",
-            file=__import__('sys').stderr, flush=True,
-        )
+        print(f"\n{'='*60}", flush=True)
+        print(f"Task: {task_name} | {obs.passengers_total} passengers | max_steps={obs.max_steps}", flush=True)
+        print(f"{'='*60}\n", flush=True)
 
         for step in range(1, max_steps + 1):
             if result.done:
@@ -322,11 +322,12 @@ async def run_task(
             action_dict = get_agent_action(model, obs, conversation_history, task_id)
 
             if action_dict is None:
-                print(f"[DEBUG] Step {step}: LLM failed, using fallback", file=__import__('sys').stderr, flush=True)
+                print(f"[DEBUG] Step {step}: LLM failed, using fallback", flush=True)
                 action_dict = fallback_action(obs)
 
             action_summary = f"{action_dict['tool_name']}({json.dumps(action_dict['args'])})"
-            print(f"[DEBUG] Step {step}: {action_summary}", file=__import__('sys').stderr, flush=True)
+            print(f"\n--- Step {step} ---", flush=True)
+            print(f"  Action: {action_summary}", flush=True)
 
             result = await env.step(AirlineReassignmentAction(
                 tool_name=action_dict["tool_name"],
@@ -336,14 +337,13 @@ async def run_task(
             reward = result.reward or 0.0
             done = result.done
 
-            print(
-                f"[DEBUG] reward={reward:.2f} reason={obs.reward_reason} remaining={obs.passengers_remaining}/{obs.passengers_total}",
-                file=__import__('sys').stderr, flush=True,
-            )
+            print(f"  Reward: {reward:.2f} ({obs.reward_reason})", flush=True)
+            print(f"  Passengers remaining: {obs.passengers_remaining}/{obs.passengers_total}", flush=True)
             if obs.tool_result:
                 status = obs.tool_result.get("status", "unknown")
+                print(f"  Tool status: {status}", flush=True)
                 if status == "error":
-                    print(f"[DEBUG] Tool error: {obs.tool_result.get('message', 'unknown')}", file=__import__('sys').stderr, flush=True)
+                    print(f"  Error: {obs.tool_result.get('message', 'unknown')}", flush=True)
 
             rewards.append(reward)
             steps_taken = step
@@ -363,24 +363,27 @@ async def run_task(
             })
 
             if done:
+                print(f"\n{'='*60}", flush=True)
+                print(f"Episode complete at step {step}!", flush=True)
                 if obs.tool_result and "grader_score" in obs.tool_result:
                     score = obs.tool_result["grader_score"]
-                print(f"[DEBUG] Episode done at step {step}, grader_score={score:.2f}", file=__import__('sys').stderr, flush=True)
+                    print(f"Grader score: {score:.3f}", flush=True)
+                print(f"{'='*60}\n", flush=True)
                 break
 
         success = score >= 0.5
         score = min(max(score, 0.0), 1.0)
 
     except Exception as e:
+        print(f"[DEBUG] Task {task_name} failed: {e}", flush=True)
         import traceback
-        print(f"[DEBUG] Task {task_name} failed: {e}", file=__import__('sys').stderr, flush=True)
-        traceback.print_exc(file=__import__('sys').stderr)
+        traceback.print_exc()
 
     finally:
         try:
             await env.close()
         except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", file=__import__('sys').stderr, flush=True)
+            print(f"[DEBUG] env.close() error: {e}", flush=True)
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 

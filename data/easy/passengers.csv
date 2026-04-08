@@ -1,0 +1,9 @@
+passenger_id,name,seat_ac1,cabin,paid_window
+PAX-E001,Aarav Sharma,1A,business,False
+PAX-E002,Priya Patel,1B,business,False
+PAX-E003,Rohan Gupta,1C,business,False
+PAX-E004,Ananya Singh,1D,business,False
+PAX-E005,Vikram Mehta,2A,economy,False
+PAX-E006,Deepa Nair,2B,economy,False
+PAX-E007,Arjun Kumar,2C,economy,False
+PAX-E008,Shreya Iyer,2D,economy,False

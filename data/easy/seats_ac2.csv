@@ -1,0 +1,11 @@
+aircraft_id,seat_id,cabin,seat_type
+AC-2,1A,business,window
+AC-2,1B,business,aisle
+AC-2,1C,business,aisle
+AC-2,1D,business,window
+AC-2,2A,economy,window
+AC-2,2B,economy,aisle
+AC-2,2C,economy,aisle
+AC-2,2D,economy,aisle
+AC-2,2E,economy,aisle
+AC-2,2F,economy,window

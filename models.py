@@ -86,10 +86,7 @@ class AirlineReassignmentObservation(Observation):
         default=0.0,
         description="Sum of all rewards received so far in this episode",
     )
-    grader_score: Optional[float] = Field(
-        default=None,
-        description="Current 0-1 quality score; None until episode ends",
-    )
+
 
 
 class AirlineReassignmentState(State):

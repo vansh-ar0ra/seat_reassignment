@@ -52,6 +52,9 @@ class EpisodeState:
     ac1_seat_info: Dict[str, dict]
     ac2_seat_info: Dict[str, dict]
 
+    # Task identity
+    task_id: str
+
     # Episode tracking
     fetched_seats: set
     step_count: int
@@ -86,24 +89,29 @@ class AirlineReassignmentEnvironment(Environment):
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, seed: Optional[int] = None) -> AirlineReassignmentObservation:
+    def reset(self, seed: Optional[int] = None, task_id: str = "medium") -> AirlineReassignmentObservation:
         """Load data, build lookup dicts, and return the initial observation."""
         episode_id = str(uuid4())
         self._state = State(episode_id=episode_id, step_count=0)
 
+        # --- resolve task-specific data directory ---
+        task_dir = self._data_dir / task_id
+        if not task_dir.is_dir():
+            raise ValueError(f"Unknown task_id {task_id!r}: no data directory at {task_dir}")
+
         # --- load files ---
-        with open(self._data_dir / "ac1_config.json") as f:
+        with open(task_dir / "ac1_config.json") as f:
             ac1_config = json.load(f)
-        with open(self._data_dir / "ac2_config.json") as f:
+        with open(task_dir / "ac2_config.json") as f:
             ac2_config = json.load(f)
 
-        seats_ac1_df  = pd.read_csv(self._data_dir / "seats_ac1.csv")
-        seats_ac2_df  = pd.read_csv(self._data_dir / "seats_ac2.csv")
-        passengers_df = pd.read_csv(self._data_dir / "passengers.csv")
+        seats_ac1_df  = pd.read_csv(task_dir / "seats_ac1.csv")
+        seats_ac2_df  = pd.read_csv(task_dir / "seats_ac2.csv")
+        passengers_df = pd.read_csv(task_dir / "passengers.csv")
 
         # assignments.csv: seat_ac2 column starts all-NaN (passengers not yet moved)
         assignments_df = (
-            pd.read_csv(self._data_dir / "assignments.csv")
+            pd.read_csv(task_dir / "assignments.csv")
             .copy()
             .set_index("passenger_id")
         )
@@ -136,6 +144,7 @@ class AirlineReassignmentEnvironment(Environment):
             ac2_seat_set=ac2_seat_set,
             ac1_seat_info=ac1_seat_info,
             ac2_seat_info=ac2_seat_info,
+            task_id=task_id,
             fetched_seats=set(),
             step_count=0,
             max_steps=max_steps,
@@ -224,13 +233,6 @@ class AirlineReassignmentEnvironment(Environment):
         step_limit_reached = ep.step_count >= ep.max_steps
         done = bool(all_assigned or step_limit_reached)
 
-        # --- grader score (computed every step so agent sees live quality) ---
-        grader = self._reward_computer.grader_score(
-            assignments_df=ep.assignments,
-            passengers_df=ep.passengers_df,
-            ac2_seat_info=ep.ac2_seat_info,
-        )
-
         # --- terminal reward ---
         if done:
             terminal_reward, terminal_breakdown = self._reward_computer.terminal_reward(
@@ -241,6 +243,12 @@ class AirlineReassignmentEnvironment(Environment):
             )
             reward += terminal_reward
 
+            grader = self._reward_computer.grader_score(
+                assignments_df=ep.assignments,
+                passengers_df=ep.passengers_df,
+                ac2_seat_info=ep.ac2_seat_info,
+            )
+
             if step_limit_reached and not all_assigned:
                 reason += " | Episode timed out — not all passengers assigned"
             else:
@@ -249,6 +257,7 @@ class AirlineReassignmentEnvironment(Environment):
             tool_result = {
                 **(tool_result or {}),
                 "terminal_breakdown": terminal_breakdown,
+                "grader_score": grader,
             }
             ep.done = True
 
@@ -259,7 +268,6 @@ class AirlineReassignmentEnvironment(Environment):
             reward=reward,
             reward_reason=reason,
             done=done,
-            grader_score=grader,
         )
 
     @property
@@ -290,7 +298,6 @@ class AirlineReassignmentEnvironment(Environment):
         reward: float,
         reward_reason: str,
         done: bool,
-        grader_score: Optional[float] = None,
     ) -> AirlineReassignmentObservation:
         ep = self._episode
 
@@ -322,7 +329,6 @@ class AirlineReassignmentEnvironment(Environment):
             step_count=ep.step_count,
             max_steps=ep.max_steps,
             cumulative_reward=ep.cumulative_reward,
-            grader_score=grader_score,
             done=done,
             reward=reward,
         )
