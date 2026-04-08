@@ -4,7 +4,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 from typing import List, Optional
 
 try:
@@ -12,12 +11,6 @@ try:
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0", "--quiet"])
     from openai import OpenAI
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
-except ImportError:
-    pass  # evaluator sets env vars directly; .env not needed
 
 from client import SeatReassignmentEnv
 from models import SeatReassignmentAction
