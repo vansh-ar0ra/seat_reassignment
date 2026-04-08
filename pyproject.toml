@@ -35,7 +35,7 @@ dev = [
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
 # or: python -m seat_reassignment.server.app
-server = "server.app:main"
+server = "seat_reassignment.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
