@@ -202,27 +202,30 @@ class RewardComputer:
         merged = self._merged(assignments_df, passengers_df)
         n_total = len(merged)
         if n_total == 0:
-            return 0.0
+            score = 0.0
+        else:
+            assigned = merged[merged["seat_ac2"].notna()].copy()
 
-        assigned = merged[merged["seat_ac2"].notna()].copy()
+            cabin_score = self._cabin_score(assigned, ac2_seat_info, n_total)
 
-        cabin_score = self._cabin_score(assigned, ac2_seat_info, n_total)
+            # Check whether any preference columns exist with at least one paid passenger
+            has_window_pref  = (
+                "paid_window" in merged.columns
+                and bool(merged["paid_window"].astype(bool).sum() > 0)
+            )
+            has_legroom_pref = (
+                "paid_legroom" in merged.columns
+                and bool(merged["paid_legroom"].astype(bool).sum() > 0)
+            )
 
-        # Check whether any preference columns exist with at least one paid passenger
-        has_window_pref  = (
-            "paid_window" in merged.columns
-            and bool(merged["paid_window"].astype(bool).sum() > 0)
-        )
-        has_legroom_pref = (
-            "paid_legroom" in merged.columns
-            and bool(merged["paid_legroom"].astype(bool).sum() > 0)
-        )
+            if not has_window_pref and not has_legroom_pref:
+                score = cabin_score
+            else:
+                preference_score = self._preference_score(merged, assigned, ac2_seat_info)
+                score = (cabin_score + preference_score) / 2.0
 
-        if not has_window_pref and not has_legroom_pref:
-            return cabin_score
-
-        preference_score = self._preference_score(merged, assigned, ac2_seat_info)
-        return (cabin_score + preference_score) / 2.0
+        EPS = 1e-4
+        return min(max(score, EPS), 1.0 - EPS)
 
     # ------------------------------------------------------------------
     # Internal helpers
