@@ -9,11 +9,22 @@ from typing import List, Optional
 try:
     from openai import OpenAI
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai>=1.0.0", "--quiet"])
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "openai>=1.0.0", "--quiet"],
+            timeout=120,
+        )
+    except Exception:
+        pass
     from openai import OpenAI
 
-from client import SeatReassignmentEnv
-from models import SeatReassignmentAction
+try:
+    from client import SeatReassignmentEnv
+    from models import SeatReassignmentAction
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from client import SeatReassignmentEnv
+    from models import SeatReassignmentAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
