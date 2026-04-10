@@ -68,7 +68,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
 # Runtime configuration (override with -e at docker run time — no secrets here)
-ENV WORKERS=4
+ENV WORKERS=1
 ENV MAX_CONCURRENT_ENVS=100
 
 # Health check — uses Python stdlib so no curl dependency required
