@@ -224,7 +224,7 @@ class RewardComputer:
                 preference_score = self._preference_score(merged, assigned, ac2_seat_info)
                 score = (cabin_score + preference_score) / 2.0
 
-        EPS = 1e-4
+        EPS = 0.01
         return min(max(score, EPS), 1.0 - EPS)
 
     # ------------------------------------------------------------------
