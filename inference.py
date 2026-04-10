@@ -22,6 +22,7 @@ API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"#"Qwen/Qwen2.5-72B-Instruct"
 IMAGE_NAME = os.getenv("IMAGE_NAME")
+ENV_URL = os.getenv("ENV_URL") or os.getenv("SERVER_URL") or "http://localhost:8000"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -258,8 +259,6 @@ async def run_task(
     max_steps: int,
     client: OpenAI,
 ) -> None:
-    env = SeatReassignmentEnv(base_url="http://localhost:8000")
-
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
@@ -268,7 +267,9 @@ async def run_task(
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
+    env = None
     try:
+        env = SeatReassignmentEnv(base_url=ENV_URL)
         result = await env.reset(task_id=task_id)
         obs = result.observation
 
@@ -323,10 +324,11 @@ async def run_task(
         pass
 
     finally:
-        try:
-            await env.close()
-        except Exception:
-            pass
+        if env is not None:
+            try:
+                await env.close()
+            except Exception:
+                pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
@@ -334,9 +336,16 @@ async def run_task(
 # Main — loop over all tasks
 # ---------------------------------------------------------------------------
 async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    try:
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    except Exception as exc:
+        print(f"[ERROR] Failed to create OpenAI client: {exc}", flush=True)
+        return
     for task_name, task_id, max_steps in TASKS:
-        await run_task(task_name, task_id, max_steps, client)
+        try:
+            await run_task(task_name, task_id, max_steps, client)
+        except Exception as exc:
+            print(f"[ERROR] task={task_name} failed: {exc}", flush=True)
 
 
 if __name__ == "__main__":
