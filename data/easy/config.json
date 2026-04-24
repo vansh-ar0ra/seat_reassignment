@@ -1,0 +1,6 @@
+{
+    "task_id": "easy",
+    "max_steps": 30,
+    "cancelled_flight": "FL-100",
+    "destination": "DEL"
+}
