@@ -44,7 +44,7 @@ htmlcov/
 .idea/
 *.swp
 *.swo
-
+poetry.lock
 # OS
 .DS_Store
 

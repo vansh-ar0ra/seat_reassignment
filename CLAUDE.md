@@ -17,9 +17,9 @@ This is an **OpenEnv-compliant RL environment** for a Meta hackathon ("Team Agen
 | Problem | Aircraft swap — reassign seats AC-1→AC-2 | Flight cancelled — rebook passengers onto alternative flights |
 | Granularity | Seat-level (specific seats) | Inventory-level (cabin buckets on flights) |
 | Tools | 3 (get_passenger_details, assign_seat, swap_seats) | 7 (list_passengers, get_passenger_details, list_alternative_flights, get_flight_details, book_passenger, book_group, finalize_plan) |
-| Constraints | Cabin class, paid_window, paid_legroom | Priority tiers, groups (hard/soft), SSR flags (UM, WCHR, pet_cabin, pet_cargo), downstream deadlines, cabin matching |
+| Constraints | Cabin class, paid_window, paid_legroom | Priority tiers, groups (hard/soft), SSR flags (UM, WCHR, pet_cabin, pet_cargo), downstream deadlines, cabin matching, paid_window, paid_legroom |
 | Reward | Per-step + terminal weighted score | 3-layer: step-shaped + end-of-episode settlement + hard-constraint penalties |
-| Grader | cabin_score ± preference_score | 0.35×coverage + 0.15×cabin_match + 0.15×group_integrity + 0.15×deadline + 0.20×ssr_integrity |
+| Grader | cabin_score ± preference_score | 0.30×coverage + 0.15×cabin_match + 0.15×group_integrity + 0.10×deadline + 0.20×ssr_integrity + 0.10×preference |
 | Difficulty | Data varies (8 vs 20 passengers, preference types) | Data varies (passenger count, constraint density, capacity scarcity) — same prompt all tiers |
 
 ---

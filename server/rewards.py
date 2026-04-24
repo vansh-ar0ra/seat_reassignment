@@ -1,37 +1,72 @@
 """
-Reward computation for the Airline Seat Reassignment Environment.
+Reward computation for the Flight Rebooking Environment.
 
 All reward logic lives in RewardComputer. The class is stateless — it
 receives data as arguments and returns (reward_value, reason_string) tuples.
 Constants are defined at module level so they can be imported by tests.
 """
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
-# Reward constants
+# Constants
 # ---------------------------------------------------------------------------
-REWARD_FETCH_NEUTRAL      =  0.0
-REWARD_FETCH_REDUNDANT    = -0.05
-REWARD_FETCH_ERROR        = -0.1
 
-REWARD_ASSIGN_CABIN_PREF    =  0.35   # cabin match + window preference satisfied
-REWARD_ASSIGN_CABIN_NOPREF  =  0.2    # cabin match + no window preference
-REWARD_ASSIGN_CABIN_PREFMISS =  0.1   # cabin match + window preference missed
-REWARD_ASSIGN_CABIN_MISMATCH = -0.1   # wrong cabin
-REWARD_ASSIGN_ERROR          = -0.4
+EPS = 1e-4
 
-REWARD_SWAP_IMPROVE  =  0.25
-REWARD_SWAP_NEUTRAL  = -0.05
-REWARD_SWAP_WORSE    = -0.15
-REWARD_SWAP_ERROR    = -0.4
+PRIORITY_WEIGHTS = {1: 1.5, 2: 1.3, 3: 1.0, 4: 0.8, 5: 0.6}
 
-REWARD_INVALID_TOOL       = -0.4
-REWARD_INCOMPLETE_PENALTY = -1.0
+# Step rewards — info tools
+REWARD_LIST_PASSENGERS_FIRST = 0.02
+REWARD_LIST_PASSENGERS_CHURN = -0.01  # 3rd+ call with no intervening bookings
+REWARD_GET_DETAILS_UNBOOKED = 0.02
+REWARD_GET_DETAILS_BOOKED = -0.01
+REWARD_LIST_FLIGHTS = 0.01
+REWARD_GET_FLIGHT_DETAILS = 0.01
 
-TERMINAL_W_CABIN =  1.5
-TERMINAL_W_PREF  =  1.0
-TERMINAL_W_EFF   =  0.5
+# Step rewards — booking outcomes
+REWARD_SAME_CABIN_GROUP = 0.3       # same cabin, whole group together
+REWARD_UPGRADE = 0.10                # upgrade from original cabin
+REWARD_SPLIT_CABIN_SAME_FLIGHT = -0.02  # split across cabins, same flight (group fallback)
+REWARD_DOWNGRADE = -0.02              # cabin downgrade
+REWARD_DEADLINE_BONUS = 0.05         # additional bonus for meeting deadline
+REWARD_HARD_VIOLATION = -0.30        # SSR mismatch, hard group split, deadline miss with alt
+REWARD_FAILED_BOOKING = -0.50        # rejected by environment
+
+# Step rewards — other
+REWARD_INVALID_TOOL = -0.20
+REWARD_FINALIZE = 0.0                # finalize itself has no step reward
+
+# Grader component weights
+GRADER_W_COVERAGE = 0.35
+GRADER_W_CABIN_MATCH = 0.15
+GRADER_W_GROUP_INTEGRITY = 0.15
+GRADER_W_DEADLINE = 0.15
+GRADER_W_SSR_INTEGRITY = 0.20
+
+# Hard-constraint penalty (subtracted from final grader score per violation)
+GRADER_HARD_PENALTY = 0.15
+
+# Group integrity scores
+GROUP_SAME_FLIGHT_SAME_CABIN = 0.7
+GROUP_SAME_FLIGHT_DIFF_CABIN = 0.5
+GROUP_SPLIT_FLIGHTS_HARD = 0.0
+GROUP_SPLIT_FLIGHTS_SOFT = 0.04
+
+
+def priority_weight(tier: int) -> float:
+    """Return the priority multiplier for a given tier."""
+    return PRIORITY_WEIGHTS.get(tier, 1.0)
+
+
+# Cabin ordering for upgrade/downgrade detection
+_CABIN_RANK = {"economy": 0, "premium_economy": 1, "business": 2}
+
+
+def _cabin_rank(cabin: str) -> int:
+    return _CABIN_RANK.get(cabin, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +76,7 @@ TERMINAL_W_EFF   =  0.5
 class RewardComputer:
     """
     Stateless reward computer. Instantiated once per episode with the
-    episode-level parameters needed for efficiency scoring.
+    episode-level parameters needed for reward scaling.
     """
 
     def __init__(self, total_passengers: int, max_steps: int):
@@ -49,285 +84,349 @@ class RewardComputer:
         self.max_steps = max_steps
 
     # ------------------------------------------------------------------
-    # Per-step rewards
+    # Step-level: info calls
     # ------------------------------------------------------------------
 
-    def reward_for_fetch(self, is_redundant: bool, is_error: bool) -> tuple[float, str]:
-        """Reward for a get_passenger_details call."""
-        if is_error:
-            return (REWARD_FETCH_ERROR, "Fetch error: invalid seat or passenger already reassigned")
-        if is_redundant:
-            return (REWARD_FETCH_REDUNDANT, "Redundant fetch: seat already queried this episode")
-        return (REWARD_FETCH_NEUTRAL, "Fetch: new seat queried")
+    def reward_for_info_call(
+        self, tool_name: str, ep_state
+    ) -> Tuple[float, str]:
+        """Compute reward for an information-gathering tool call."""
 
-    def reward_for_assign(self, tool_result: dict) -> tuple[float, str]:
-        """
-        Reward for an assign_seat call.
+        if tool_name == "list_passengers":
+            count = ep_state.info_calls.get("list_passengers", 0)
+            # Churn: 3rd+ call with no bookings since last list_passengers
+            if count >= 3 and ep_state.last_booking_step < ep_state.step_count - (count - 1):
+                return (REWARD_LIST_PASSENGERS_CHURN,
+                        "Redundant list_passengers call with no intervening bookings")
+            if count == 1:
+                return (REWARD_LIST_PASSENGERS_FIRST,
+                        "First list_passengers call — good planning")
+            return (REWARD_LIST_PASSENGERS_FIRST,
+                    "list_passengers call")
 
-        Checks cabin_match first; preference satisfaction is only considered
-        when the cabin is correct. Handles both single (window) and dual
-        (window + legroom) preference dimensions gracefully.
-        """
-        if tool_result["status"] == "error":
-            return (REWARD_ASSIGN_ERROR,
-                    f"Assignment error: {tool_result.get('message', '')}")
+        if tool_name == "get_passenger_details":
+            return (REWARD_GET_DETAILS_UNBOOKED,
+                    "Fetched passenger details")
 
-        cabin_match = tool_result["cabin_match"]
-        if not cabin_match:
-            return (REWARD_ASSIGN_CABIN_MISMATCH, "Assignment: cabin mismatch")
+        if tool_name == "get_passenger_details_booked":
+            return (REWARD_GET_DETAILS_BOOKED,
+                    "Fetched details for already-booked passenger")
 
-        # Collect active preference results (True/False only; None = not applicable)
-        window_pref  = tool_result.get("window_preference_satisfied")
-        legroom_pref = tool_result.get("legroom_preference_satisfied")
-        active_prefs = [p for p in (window_pref, legroom_pref) if p is not None]
+        if tool_name == "list_alternative_flights":
+            return (REWARD_LIST_FLIGHTS,
+                    "Listed alternative flights")
 
-        if not active_prefs:
-            # No paid preferences at all (easy task, or passengers without any pref)
-            return (REWARD_ASSIGN_CABIN_NOPREF,
-                    "Valid assignment: cabin match, no preferences")
+        if tool_name == "get_flight_details":
+            return (REWARD_GET_FLIGHT_DETAILS,
+                    "Fetched flight details")
 
-        if all(active_prefs):
-            return (REWARD_ASSIGN_CABIN_PREF,
-                    "Valid assignment: cabin match, all preferences satisfied")
+        return (0.0, f"Info call: {tool_name}")
 
-        if not any(active_prefs):
-            return (REWARD_ASSIGN_CABIN_PREFMISS,
-                    "Valid assignment: cabin match, preferences not satisfied")
+    # ------------------------------------------------------------------
+    # Step-level: booking
+    # ------------------------------------------------------------------
 
-        # Mixed: some satisfied, some missed
-        return (REWARD_ASSIGN_CABIN_NOPREF,
-                "Valid assignment: cabin match, some preferences satisfied")
-
-    def reward_for_swap(
+    def reward_for_booking(
         self,
         tool_result: dict,
-        pax1_info: dict,
-        pax2_info: dict,
-        old_seat_1_info: dict,
-        old_seat_2_info: dict,
-        new_seat_1_info: dict,
-        new_seat_2_info: dict,
-    ) -> tuple[float, str]:
-        """
-        Reward for a swap_seats call.
+        passenger: dict,
+        ep_state,
+    ) -> Tuple[float, str]:
+        """Compute reward for a book_passenger call that succeeded."""
+        if tool_result["status"] != "success":
+            return (REWARD_FAILED_BOOKING,
+                    f"Booking failed: {tool_result.get('message', '')}")
 
-        Computes the combined constraint score for both passengers before
-        and after the swap; rewards are based on the sign of the delta.
-        """
-        if tool_result["status"] == "error":
-            return (REWARD_SWAP_ERROR,
-                    f"Swap error: {tool_result.get('message', '')}")
+        pw = priority_weight(passenger["priority_tier"])
+        assigned_cabin = tool_result["cabin"]
+        original_cabin = passenger["original_cabin"]
 
-        score_before = (
-            self._constraint_score(pax1_info, old_seat_1_info)
-            + self._constraint_score(pax2_info, old_seat_2_info)
-        )
-        score_after = (
-            self._constraint_score(pax1_info, new_seat_1_info)
-            + self._constraint_score(pax2_info, new_seat_2_info)
-        )
-        delta = score_after - score_before
+        # Cabin comparison
+        assigned_rank = _cabin_rank(assigned_cabin)
+        original_rank = _cabin_rank(original_cabin)
 
-        if delta > 0:
-            return (REWARD_SWAP_IMPROVE, "Swap improved constraint satisfaction")
-        if delta < 0:
-            return (REWARD_SWAP_WORSE, "Swap worsened constraint satisfaction")
-        return (REWARD_SWAP_NEUTRAL, "Swap did not change constraint satisfaction")
+        if assigned_cabin == original_cabin:
+            reward = REWARD_SAME_CABIN_GROUP * pw
+            reason = "Booking: same cabin"
+        elif assigned_rank > original_rank:
+            reward = REWARD_UPGRADE * pw
+            reason = "Booking: cabin upgrade"
+        else:
+            reward = REWARD_DOWNGRADE * pw
+            reason = "Booking: cabin downgrade"
 
-    def reward_for_invalid_tool(self) -> tuple[float, str]:
+        # Deadline bonus
+        if tool_result.get("deadline_met"):
+            reward += REWARD_DEADLINE_BONUS * pw
+            reason += " + deadline met"
+
+        return (reward, reason)
+
+    def reward_for_group_booking(
+        self,
+        tool_result: dict,
+        group_passengers: List[dict],
+        ep_state,
+    ) -> Tuple[float, str]:
+        """Compute reward for a book_group call that succeeded."""
+        if tool_result["status"] != "success":
+            return (REWARD_FAILED_BOOKING,
+                    f"Group booking failed: {tool_result.get('message', '')}")
+
+        total_reward = 0.0
+        booked_list = tool_result["booked"]
+        cabin_set = set()
+
+        for entry in booked_list:
+            pid = entry["passenger_id"]
+            pax = next(p for p in group_passengers if p["passenger_id"] == pid)
+            pw = priority_weight(pax["priority_tier"])
+
+            assigned_cabin = entry["cabin"]
+            original_cabin = pax["original_cabin"]
+            cabin_set.add(assigned_cabin)
+
+            assigned_rank = _cabin_rank(assigned_cabin)
+            original_rank = _cabin_rank(original_cabin)
+
+            if assigned_cabin == original_cabin:
+                total_reward += REWARD_SAME_CABIN_GROUP * pw
+            elif assigned_rank > original_rank:
+                total_reward += REWARD_UPGRADE * pw
+            else:
+                total_reward += REWARD_DOWNGRADE * pw
+
+            # Deadline bonus
+            if pax.get("downstream_deadline"):
+                total_reward += REWARD_DEADLINE_BONUS * pw
+
+        if len(cabin_set) == 1:
+            reason = "Group booking: all same cabin on same flight"
+        else:
+            reason = "Group booking: split cabin on same flight"
+
+        return (total_reward, reason)
+
+    def reward_for_failed_action(
+        self, tool_result: dict
+    ) -> Tuple[float, str]:
+        """Reward for a booking action rejected by the environment."""
+        return (REWARD_FAILED_BOOKING,
+                f"Action failed: {tool_result.get('message', '')}")
+
+    def reward_for_invalid_tool(self) -> Tuple[float, str]:
         """Reward when the agent submits an unrecognized tool name."""
         return (REWARD_INVALID_TOOL, "Unrecognized tool name")
 
     # ------------------------------------------------------------------
-    # Terminal reward (end of episode)
-    # ------------------------------------------------------------------
-
-    def terminal_reward(
-        self,
-        assignments_df: pd.DataFrame,
-        passengers_df: pd.DataFrame,
-        ac2_seat_info: dict,
-        total_steps: int,
-    ) -> tuple[float, dict]:
-        """
-        Compute the terminal reward at episode end.
-
-        Returns (reward_value, breakdown_dict).  The breakdown contains
-        individual component scores for logging/observation.
-        """
-        merged = self._merged(assignments_df, passengers_df)
-        n_total = len(merged)
-
-        assigned = merged[merged["seat_ac2"].notna()].copy()
-        n_assigned = len(assigned)
-
-        cabin_score = self._cabin_score(assigned, ac2_seat_info, n_total)
-        preference_score = self._preference_score(merged, assigned, ac2_seat_info)
-        efficiency_score = max(0.0, 1.0 - total_steps / self.max_steps)
-        incomplete_penalty = REWARD_INCOMPLETE_PENALTY if n_assigned < n_total else 0.0
-
-        weighted_total = (
-            TERMINAL_W_CABIN * cabin_score
-            + TERMINAL_W_PREF * preference_score
-            + TERMINAL_W_EFF * efficiency_score
-            + incomplete_penalty
-        )
-
-        breakdown = {
-            "cabin_score": cabin_score,
-            "preference_score": preference_score,
-            "efficiency_score": efficiency_score,
-            "weighted_total": weighted_total,
-            "incomplete_penalty": incomplete_penalty,
-        }
-        return weighted_total, breakdown
-
-    # ------------------------------------------------------------------
-    # Grader score (evaluation metric, not used during episode)
+    # Terminal: grader score
     # ------------------------------------------------------------------
 
     def grader_score(
         self,
-        assignments_df: pd.DataFrame,
-        passengers_df: pd.DataFrame,
-        ac2_seat_info: dict,
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+        flights: Dict[str, dict],
+        groups: Dict[str, List[str]],
     ) -> float:
         """
-        Return a 0.0–1.0 quality score for use by hackathon evaluation.
+        Compute the 0-1 grader score for hackathon evaluation.
 
-        Unassigned passengers count as zero contribution to both cabin and
-        preference scores.  If there are no paid-window passengers,
-        the score equals the cabin score alone.
+        Components:
+          coverage_score      (0.35) — fraction of passengers booked
+          cabin_match_score   (0.15) — priority-weighted cabin match fraction
+          group_integrity     (0.15) — per-group score, averaged
+          deadline_score      (0.15) — priority-weighted deadline-met fraction
+          ssr_integrity       (0.20) — 1.0 minus per-violation penalty
         """
-        merged = self._merged(assignments_df, passengers_df)
-        n_total = len(merged)
-        if n_total == 0:
-            score = 0.0
-        else:
-            assigned = merged[merged["seat_ac2"].notna()].copy()
+        breakdown = self.terminal_breakdown(bookings, passengers, flights, groups)
 
-            cabin_score = self._cabin_score(assigned, ac2_seat_info, n_total)
+        score = (
+            GRADER_W_COVERAGE * breakdown["coverage_score"]
+            + GRADER_W_CABIN_MATCH * breakdown["cabin_match_score"]
+            + GRADER_W_GROUP_INTEGRITY * breakdown["group_integrity_score"]
+            + GRADER_W_DEADLINE * breakdown["deadline_score"]
+            + GRADER_W_SSR_INTEGRITY * breakdown["ssr_integrity_score"]
+        )
 
-            # Check whether any preference columns exist with at least one paid passenger
-            has_window_pref  = (
-                "paid_window" in merged.columns
-                and bool(merged["paid_window"].astype(bool).sum() > 0)
-            )
-            has_legroom_pref = (
-                "paid_legroom" in merged.columns
-                and bool(merged["paid_legroom"].astype(bool).sum() > 0)
-            )
+        # Hard-constraint penalties
+        score -= GRADER_HARD_PENALTY * breakdown["hard_violations"]
 
-            if not has_window_pref and not has_legroom_pref:
-                score = cabin_score
+        return max(EPS, min(1.0 - EPS, score))
+
+    def terminal_breakdown(
+        self,
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+        flights: Dict[str, dict],
+        groups: Dict[str, List[str]],
+    ) -> dict:
+        """
+        Compute all grader sub-scores and return them in a dict.
+        """
+        n_total = len(passengers)
+
+        # --- Coverage ---
+        n_booked = len(bookings)
+        coverage_score = n_booked / n_total if n_total > 0 else 0.0
+
+        # --- Cabin match (priority-weighted) ---
+        cabin_match_score = self._cabin_match_score(bookings, passengers)
+
+        # --- Group integrity ---
+        group_integrity_score, hard_violations = self._group_integrity_score(
+            bookings, passengers, groups
+        )
+
+        # --- Deadline score (priority-weighted) ---
+        deadline_score = self._deadline_score(bookings, passengers, flights)
+
+        # --- SSR integrity ---
+        ssr_integrity_score, ssr_violations = self._ssr_integrity_score(
+            bookings, passengers, flights
+        )
+        hard_violations += ssr_violations
+
+        return {
+            "coverage_score": coverage_score,
+            "cabin_match_score": cabin_match_score,
+            "group_integrity_score": group_integrity_score,
+            "deadline_score": deadline_score,
+            "ssr_integrity_score": ssr_integrity_score,
+            "hard_violations": hard_violations,
+        }
+
+    # ------------------------------------------------------------------
+    # Grader sub-score helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cabin_match_score(
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+    ) -> float:
+        """Priority-weighted fraction of booked passengers in their original cabin."""
+        total_weight = 0.0
+        matched_weight = 0.0
+
+        for pid, pax in passengers.items():
+            pw = priority_weight(pax["priority_tier"])
+            total_weight += pw
+            if pid in bookings and bookings[pid]["cabin"] == pax["original_cabin"]:
+                matched_weight += pw
+
+        return matched_weight / total_weight if total_weight > 0 else 0.0
+
+    @staticmethod
+    def _group_integrity_score(
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+        groups: Dict[str, List[str]],
+    ) -> Tuple[float, int]:
+        """
+        Average per-group integrity score.
+
+        Returns (avg_score, hard_violation_count).
+        If no groups exist, returns (1.0, 0).
+        """
+        if not groups:
+            return 1.0, 0
+
+        total_score = 0.0
+        hard_violations = 0
+
+        for gid, member_ids in groups.items():
+            integrity = passengers[member_ids[0]]["group_integrity"]
+
+            # Collect flights and cabins for booked members
+            booked_flights = set()
+            booked_cabins = set()
+            all_booked = True
+            for pid in member_ids:
+                if pid in bookings:
+                    booked_flights.add(bookings[pid]["flight_id"])
+                    booked_cabins.add(bookings[pid]["cabin"])
+                else:
+                    all_booked = False
+
+            if not booked_flights:
+                # No members booked — 0 score, no hard violation
+                total_score += 0.0
+                continue
+
+            if not all_booked:
+                # Partially booked — treat as split
+                if integrity == "hard":
+                    total_score += GROUP_SPLIT_FLIGHTS_HARD
+                    hard_violations += 1
+                else:
+                    total_score += GROUP_SPLIT_FLIGHTS_SOFT
+                continue
+
+            if len(booked_flights) == 1 and len(booked_cabins) == 1:
+                total_score += GROUP_SAME_FLIGHT_SAME_CABIN
+            elif len(booked_flights) == 1:
+                total_score += GROUP_SAME_FLIGHT_DIFF_CABIN
             else:
-                preference_score = self._preference_score(merged, assigned, ac2_seat_info)
-                score = (cabin_score + preference_score) / 2.0
+                # Split across flights
+                if integrity == "hard":
+                    total_score += GROUP_SPLIT_FLIGHTS_HARD
+                    hard_violations += 1
+                else:
+                    total_score += GROUP_SPLIT_FLIGHTS_SOFT
 
-        EPS = 0.01
-        return min(max(score, EPS), 1.0 - EPS)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _constraint_score(self, passenger: dict, seat_info: dict) -> float:
-        """
-        Single float measuring how well a passenger-seat pairing satisfies
-        constraints.
-
-        +1.0 for correct cabin.
-        +1.0 if paid_window and seat is window; -0.5 if paid_window and not window.
-        +1.0 if paid_legroom and seat has extra_legroom; -0.5 if not.
-        No bonus/penalty for dimensions the passenger did not pay for.
-        """
-        score = 0.0
-        if passenger.get("cabin") == seat_info.get("cabin"):
-            score += 1.0
-        if passenger.get("paid_window", False):
-            score += 1.0 if seat_info.get("seat_type") == "window" else -0.5
-        if passenger.get("paid_legroom", False):
-            score += 1.0 if seat_info.get("extra_legroom", False) else -0.5
-        return score
-
-    # ------------------------------------------------------------------
-    # Private computation helpers shared by terminal_reward & grader_score
-    # ------------------------------------------------------------------
+        avg = total_score / len(groups) if groups else 1.0
+        return avg, hard_violations
 
     @staticmethod
-    def _merged(assignments_df: pd.DataFrame, passengers_df: pd.DataFrame) -> pd.DataFrame:
-        """Join assignments onto passengers, both normalised to passenger_id index."""
-        asgn = (
-            assignments_df
-            if assignments_df.index.name == "passenger_id"
-            else assignments_df.set_index("passenger_id")
-        )
-        pax = (
-            passengers_df.set_index("passenger_id")
-            if passengers_df.index.name != "passenger_id"
-            else passengers_df
-        )
-        return pax.join(asgn[["seat_ac2"]], how="left")
-
-    @staticmethod
-    def _cabin_score(assigned: pd.DataFrame, ac2_seat_info: dict, n_total: int) -> float:
-        """Fraction of all passengers assigned to a matching-cabin seat."""
-        if assigned.empty or n_total == 0:
-            return 0.0
-        cabin_map = pd.Series({s: info["cabin"] for s, info in ac2_seat_info.items()})
-        assigned = assigned.copy()
-        assigned["ac2_cabin"] = assigned["seat_ac2"].map(cabin_map)
-        return int((assigned["cabin"] == assigned["ac2_cabin"]).sum()) / n_total
-
-    @staticmethod
-    def _preference_score(
-        merged: pd.DataFrame,
-        assigned: pd.DataFrame,
-        ac2_seat_info: dict,
+    def _deadline_score(
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+        flights: Dict[str, dict],
     ) -> float:
+        """Priority-weighted fraction of deadline-bearing passengers whose deadlines are met."""
+        total_weight = 0.0
+        met_weight = 0.0
+
+        for pid, pax in passengers.items():
+            if pax["downstream_deadline"] is None:
+                continue
+            pw = priority_weight(pax["priority_tier"])
+            total_weight += pw
+
+            if pid in bookings:
+                fl = flights[bookings[pid]["flight_id"]]
+                from server.tools import meets_deadline
+                if meets_deadline(fl["arrival_time"], pax["downstream_deadline"]):
+                    met_weight += pw
+
+        return met_weight / total_weight if total_weight > 0 else 1.0
+
+    @staticmethod
+    def _ssr_integrity_score(
+        bookings: Dict[str, dict],
+        passengers: Dict[str, dict],
+        flights: Dict[str, dict],
+    ) -> Tuple[float, int]:
         """
-        Average satisfaction rate across all active preference dimensions.
+        1.0 if no SSR violations; penalised per violation.
 
-        For each dimension (window, legroom):
-          - Compute fraction of paid passengers who got the preference satisfied.
-          - Only include dimensions where at least one passenger paid for it.
-        Returns 1.0 if no preference dimension is active (easy task or no paid pref).
-        Unassigned paid passengers count as unsatisfied.
+        Returns (score, violation_count).
         """
-        scores = []
+        violations = 0
 
-        # --- Window preference ---
-        if "paid_window" in merged.columns:
-            n_window = int(merged["paid_window"].astype(bool).sum())
-            if n_window > 0:
-                type_map = pd.Series(
-                    {s: info.get("seat_type", "") for s, info in ac2_seat_info.items()}
-                )
-                win_assigned = assigned[assigned["paid_window"].astype(bool)].copy()
-                if win_assigned.empty:
-                    scores.append(0.0)
-                else:
-                    win_assigned["ac2_seat_type"] = win_assigned["seat_ac2"].map(type_map)
-                    scores.append(
-                        int((win_assigned["ac2_seat_type"] == "window").sum()) / n_window
-                    )
+        for pid, pax in passengers.items():
+            if not pax["ssr_flags"]:
+                continue
+            if pid not in bookings:
+                continue
 
-        # --- Legroom preference ---
-        if "paid_legroom" in merged.columns:
-            n_legroom = int(merged["paid_legroom"].astype(bool).sum())
-            if n_legroom > 0:
-                legroom_map = pd.Series(
-                    {s: bool(info.get("extra_legroom", False)) for s, info in ac2_seat_info.items()}
-                )
-                leg_assigned = assigned[assigned["paid_legroom"].astype(bool)].copy()
-                if leg_assigned.empty:
-                    scores.append(0.0)
-                else:
-                    leg_assigned["ac2_extra_legroom"] = leg_assigned["seat_ac2"].map(legroom_map)
-                    scores.append(
-                        int(leg_assigned["ac2_extra_legroom"].astype(bool).sum()) / n_legroom
-                    )
+            fl = flights[bookings[pid]["flight_id"]]
+            required = set(pax["ssr_flags"])
+            supported = set(fl["supports_ssr"])
+            if not required.issubset(supported):
+                violations += 1
 
-        if not scores:
-            return 1.0
-        return sum(scores) / len(scores)
+        # Each violation subtracts 0.25 from 1.0
+        score = max(0.0, 1.0 - 0.25 * violations)
+        return score, violations

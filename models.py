@@ -1,74 +1,60 @@
 """
-Pydantic models for the Seat Reassignment environment.
+Pydantic models for the Flight Rebooking environment.
 
-SeatReassignmentAction    — what the agent sends on every step()
-SeatReassignmentObservation — what the environment returns to the agent
-SeatReassignmentState     — episode-level metadata (returned by state property)
+FlightRebookingAction      — what the agent sends on every step()
+FlightRebookingObservation — what the environment returns to the agent
+FlightRebookingState       — episode-level metadata (returned by state property)
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 
 
-class SeatReassignmentAction(Action):
+class FlightRebookingAction(Action):
     """
     Agent action — a tool call with its named arguments.
 
-    Valid tool_name values: "get_passenger_details", "assign_seat", "swap_seats".
+    Valid tool_name values:
+        list_passengers, get_passenger_details, list_alternative_flights,
+        get_flight_details, book_passenger, book_group, finalize_plan.
     Any other value is routed to the invalid-tool handler inside step().
     """
 
     tool_name: str = Field(
         ...,
-        description="Tool to call: get_passenger_details | assign_seat | swap_seats",
+        description=(
+            "Tool to call: list_passengers | get_passenger_details | "
+            "list_alternative_flights | get_flight_details | "
+            "book_passenger | book_group | finalize_plan"
+        ),
     )
-    args: Dict[str, str] = Field(
+    args: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Named arguments for the tool (all values are strings)",
+        description="Named arguments for the tool (values may be str or dict)",
     )
 
 
-class SeatReassignmentObservation(Observation):
+class FlightRebookingObservation(Observation):
     """
     Observation returned to the agent after every reset() and step().
 
     Inherited from Observation (do not redeclare): done, reward, metadata.
     """
 
-    # Static aircraft layout context (never changes during an episode)
-    ac1_layout: dict = Field(
-        default_factory=dict,
-        description="Full AC-1 seat configuration including cabin/seat_type for each seat",
-    )
-    ac2_layout: dict = Field(
-        default_factory=dict,
-        description="Full AC-2 seat configuration including cabin/seat_type for each seat",
-    )
-
-    # Dynamic assignment state
-    ac1_seats_occupied: List[str] = Field(
-        default_factory=list,
-        description="AC-1 seat IDs whose passengers have NOT yet been moved to AC-2",
-    )
-    ac2_seat_assignments: Dict[str, str] = Field(
-        default_factory=dict,
-        description="AC-2 seat_id → passenger_id for currently assigned AC-2 seats",
-    )
-    ac2_seats_available: List[str] = Field(
-        default_factory=list,
-        description="AC-2 seat IDs that are still empty",
-    )
-
     # Counters
-    passengers_remaining: int = Field(
-        default=0,
-        description="Passengers not yet assigned to AC-2",
-    )
     passengers_total: int = Field(
         default=0,
-        description="Total passenger count (always 20 in the current dataset)",
+        description="Total number of passengers needing rebooking",
+    )
+    passengers_booked: int = Field(
+        default=0,
+        description="Number of passengers successfully booked so far",
+    )
+    passengers_remaining: int = Field(
+        default=0,
+        description="Passengers not yet booked onto an alternative flight",
     )
 
     # Step feedback
@@ -87,9 +73,21 @@ class SeatReassignmentObservation(Observation):
         description="Sum of all rewards received so far in this episode",
     )
 
+    # Summary view (lightweight — not full manifests)
+    booked_summary: List[dict] = Field(
+        default_factory=list,
+        description="List of bookings made so far: [{passenger_id, flight_id, cabin}]",
+    )
+    flights_snapshot: Optional[List[dict]] = Field(
+        default=None,
+        description=(
+            "Current flight availability snapshot; only populated after "
+            "list_alternative_flights has been called"
+        ),
+    )
 
 
-class SeatReassignmentState(State):
+class FlightRebookingState(State):
     """
     Episode-level metadata returned by the state property.
 
@@ -97,7 +95,7 @@ class SeatReassignmentState(State):
     """
 
     total_passengers: int = Field(default=0)
-    passengers_assigned: int = Field(default=0)
+    passengers_booked: int = Field(default=0)
     passengers_remaining: int = Field(default=0)
     cumulative_reward: float = Field(default=0.0)
     is_complete: bool = Field(default=False)

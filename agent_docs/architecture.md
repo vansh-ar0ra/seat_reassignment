@@ -81,7 +81,7 @@ class FlightRebookingObservation(Observation):
     cumulative_reward: float = 0.0
     
     # Summary view (lightweight — not full manifests)
-    booked_summary: List[dict] = []    # [{passenger_id, flight_id, cabin}]
+    booked_summary: List[dict] = []    # [{passenger_id, flight_id, cabin, preferences_satisfied}]
     flights_snapshot: Optional[List[dict]] = None  # Current availability (only after list_alternative_flights)
 ```
 
@@ -112,8 +112,9 @@ class EpisodeState:
     config: dict                         # tier config (max_steps, etc.)
     
     # Mutable booking state
-    bookings: Dict[str, dict]            # passenger_id → {flight_id, cabin}
+    bookings: Dict[str, dict]            # passenger_id → {flight_id, cabin, preferences_satisfied}
     flight_availability: Dict[str, Dict[str, int]]  # flight_id → {cabin: count} (decremented on booking)
+    seat_features: Dict[str, Dict[str, Dict[str, int]]]  # flight_id → {cabin: {window: N, legroom: N}} (decremented on preference consumption)
     
     # Tracking for reward computation
     info_calls: Dict[str, int]           # tool_name → call count
@@ -172,6 +173,8 @@ def step(self, action: FlightRebookingAction) -> FlightRebookingObservation:
 6. Flight supports ALL of passenger's SSR flags
 7. If passenger has downstream_deadline → flight arrival_time <= deadline
 8. If passenger is in a hard group → warn (should use book_group)
+9. (Post-commit) If passenger has paid_window and cabin has window > 0 → consume window, mark satisfied
+10. (Post-commit) If passenger has paid_legroom and cabin has legroom > 0 → consume legroom, mark satisfied
 
 ### `book_group` validation chain:
 1. Group exists
@@ -181,6 +184,7 @@ def step(self, action: FlightRebookingAction) -> FlightRebookingObservation:
 5. Flight has sufficient capacity for ALL members in their assigned cabins
 6. Flight supports SSR flags of ALL group members
 7. If any member has downstream_deadline → flight arrival_time <= deadline
+8. (Post-commit) For each member, consume window/legroom seat features if passenger has paid preferences and cabin has availability
 
 ---
 
@@ -193,14 +197,21 @@ class RewardComputer:
     
     # Step-level
     def reward_for_info_call(self, tool_name, ep_state) -> (float, str)
-    def reward_for_booking(self, tool_result, passenger, flight, ep_state) -> (float, str)
-    def reward_for_group_booking(self, tool_result, group_passengers, flight, ep_state) -> (float, str)
+    def reward_for_booking(self, tool_result, passenger, ep_state) -> (float, str)
+    def reward_for_group_booking(self, tool_result, group_passengers, ep_state) -> (float, str)
     def reward_for_failed_action(self, tool_result) -> (float, str)
     def reward_for_invalid_tool(self) -> (float, str)
     
     # Terminal
     def grader_score(self, bookings, passengers, flights, groups) -> float
     def terminal_breakdown(self, bookings, passengers, flights, groups) -> dict
+    
+    # Grader sub-scores (static methods)
+    def _cabin_match_score(bookings, passengers) -> float
+    def _group_integrity_score(bookings, passengers, groups) -> (float, int)
+    def _deadline_score(bookings, passengers, flights) -> float
+    def _ssr_integrity_score(bookings, passengers, flights) -> (float, int)
+    def _preference_score(bookings, passengers) -> float  # NEW: paid_window/paid_legroom satisfaction
 ```
 
 ### Priority Weight Function
@@ -233,9 +244,9 @@ def meets_deadline(arrival_time: str, deadline: str) -> bool:
 The observation is lightweight by design. It provides:
 - Counters (total, booked, remaining)
 - Step metadata (step_count, max_steps, cumulative_reward)
-- Last tool_result (detailed feedback)
-- Booking summary (what's been booked so far — needed for agent decision-making)
-- flights_snapshot: only populated after list_alternative_flights is called
+- Last tool_result (detailed feedback including preferences_satisfied for bookings)
+- Booking summary (what's been booked so far — includes preferences_satisfied per booking)
+- flights_snapshot: only populated after list_alternative_flights is called (includes seat_features)
 
 This prevents flooding the agent's context with data it hasn't asked for.
 

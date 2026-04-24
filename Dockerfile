@@ -6,7 +6,7 @@
 
 # Multi-stage build using openenv-base
 # This Dockerfile is at the project root, so the build context is the root directory.
-# Run: openenv build -f Dockerfile --context . (or docker build -t seat_reassignment .)
+# Run: openenv build -f Dockerfile --context . (or docker build -t flight_rebooking .)
 
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
@@ -20,7 +20,7 @@ RUN apt-get update && \
 
 # Build argument to control whether we're building standalone or in-repo
 ARG BUILD_MODE=standalone
-ARG ENV_NAME=seat_reassignment
+ARG ENV_NAME=flight_rebooking
 
 # Copy entire project root as the build context
 COPY . /app/env
@@ -76,4 +76,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 # Run via the installed package path (matches pyproject.toml entry point)
-CMD ["sh", "-c", "uvicorn seat_reassignment.server.app:app --host 0.0.0.0 --port 8000 --workers ${WORKERS}"]
+CMD ["sh", "-c", "uvicorn flight_rebooking.server.app:app --host 0.0.0.0 --port 8000 --workers ${WORKERS}"]

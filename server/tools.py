@@ -1,247 +1,443 @@
 """
-Tool functions for the Airline Seat Reassignment Environment.
+Tool functions for the Flight Rebooking Environment.
 
-Each function takes a `state` object and named arguments. The state object is
-expected to have the following attributes (populated at reset() time):
+Each function takes an EpisodeState object and named arguments.
+The EpisodeState is expected to have:
 
-    state.assignments       pd.DataFrame indexed on passenger_id;
-                            columns: seat_ac1, seat_ac2 (NaN until assigned)
-    state.passengers_by_id  Dict[str, dict]  passenger_id → passenger row
-    state.ac1_seat_set      Set[str]         valid AC-1 seat IDs
-    state.ac2_seat_set      Set[str]         valid AC-2 seat IDs
-    state.ac1_seat_info     Dict[str, dict]  AC-1 seat_id → {cabin, seat_type[, extra_legroom]}
-    state.ac2_seat_info     Dict[str, dict]  AC-2 seat_id → {cabin, seat_type[, extra_legroom]}
-    state.fetched_seats     Set[str]         AC-1 seats already queried
+    ep.passengers              Dict[str, dict]  passenger_id -> full record
+    ep.flights                 Dict[str, dict]  flight_id -> full record
+    ep.groups                  Dict[str, List[str]]  group_id -> [passenger_ids]
+    ep.bookings                Dict[str, dict]  passenger_id -> {flight_id, cabin}
+    ep.flight_availability     Dict[str, Dict[str, int]]  flight_id -> {cabin: count}
+    ep.passenger_details_fetched  Set[str]  passenger_ids whose details have been fetched
+    ep.info_calls              Dict[str, int]  tool_name -> call count
+    ep.last_booking_step       int
+    ep.step_count              int
+    ep.done                    bool
 
 All functions return a dict with a "status" key ("success" or "error").
 On error, a "message" key describes what went wrong.
 No exceptions are raised for invalid inputs; they are returned as error dicts.
 """
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Dict
+
+VALID_CABINS = {"economy", "premium_economy", "business"}
 
 
 # ---------------------------------------------------------------------------
-# Internal helper
+# Time helpers
 # ---------------------------------------------------------------------------
 
-def _preference_satisfied(passenger: dict, seat_info: dict) -> tuple:
-    """
-    Returns (window_satisfied, legroom_satisfied).
+def parse_time(t: str) -> int:
+    """Convert 'HH:MM' to minutes since midnight."""
+    h, m = t.split(":")
+    return int(h) * 60 + int(m)
 
-    Each element is:
-      True  — passenger paid for this pref and it is satisfied
-      False — passenger paid for this pref and it is NOT satisfied
-      None  — passenger did not pay for this pref (not applicable)
 
-    Gracefully handles passengers without paid_legroom (easy/medium tasks):
-      passenger.get("paid_legroom", False) defaults to False → legroom=None.
-    """
-    window_paid  = passenger.get("paid_window",  False)
-    legroom_paid = passenger.get("paid_legroom", False)
-
-    window  = (seat_info.get("seat_type", "") == "window") if window_paid  else None
-    legroom = bool(seat_info.get("extra_legroom", False))  if legroom_paid else None
-
-    return window, legroom
+def meets_deadline(arrival_time: str, deadline: str) -> bool:
+    """True if flight arrives at or before the deadline."""
+    return parse_time(arrival_time) <= parse_time(deadline)
 
 
 # ---------------------------------------------------------------------------
-# Tool 1: get_passenger_details
+# Tool 1: list_passengers
 # ---------------------------------------------------------------------------
 
-def tool_get_passenger_details(state, seat_id: str) -> dict:
-    """
-    Return details for the passenger currently (or previously) in an AC-1 seat.
+def tool_list_passengers(ep) -> dict:
+    """Return a lightweight summary of all passengers."""
+    ep.info_calls["list_passengers"] = ep.info_calls.get("list_passengers", 0) + 1
 
-    Side effect: adds seat_id to state.fetched_seats when the passenger is
-    still on AC-1.
-    """
-    if seat_id not in state.ac1_seat_set:
+    summary = []
+    for pid, pax in ep.passengers.items():
+        summary.append({
+            "passenger_id": pid,
+            "priority_tier": pax["priority_tier"],
+            "group_id": pax["group_id"],
+            "has_ssr": len(pax["ssr_flags"]) > 0,
+            "has_deadline": pax["downstream_deadline"] is not None,
+            "booked": pid in ep.bookings,
+        })
+
+    return {"status": "success", "passengers": summary}
+
+
+# ---------------------------------------------------------------------------
+# Tool 2: get_passenger_details
+# ---------------------------------------------------------------------------
+
+def tool_get_passenger_details(ep, passenger_id: str) -> dict:
+    """Return the full record for a single passenger."""
+    if passenger_id not in ep.passengers:
         return {
-            "status":  "error",
-            "message": f"Seat {seat_id} does not exist on AC-1",
+            "status": "error",
+            "message": f"Passenger {passenger_id} does not exist",
         }
 
-    # Find the passenger whose AC-1 seat matches (boolean index on non-key column)
-    mask = state.assignments["seat_ac1"] == seat_id
-    row = state.assignments.loc[mask]
-    passenger_id = row.index[0]
-    seat_ac2 = row.loc[passenger_id, "seat_ac2"]
+    ep.passenger_details_fetched.add(passenger_id)
 
-    if pd.notna(seat_ac2):
-        return {
-            "status":  "error",
-            "message": (
-                f"Seat {seat_id} on AC-1 is now empty — "
-                f"passenger already reassigned to AC-2 seat {seat_ac2}"
-            ),
-        }
-
-    pax = state.passengers_by_id[passenger_id]
-    state.fetched_seats.add(seat_id)
-
+    pax = ep.passengers[passenger_id]
     result = {
-        "status":           "success",
-        "passenger_id":     passenger_id,
-        "name":             pax["name"],
-        "cabin":            pax["cabin"],
-        "paid_window":      pax.get("paid_window",  False),
-        "paid_legroom":     pax.get("paid_legroom", False),
-        "current_seat_ac1": seat_id,
-        "current_seat_type": state.ac1_seat_info[seat_id]["seat_type"],
+        "status": "success",
+        "passenger_id": passenger_id,
+        "name": pax["name"],
+        "priority_tier": pax["priority_tier"],
+        "original_cabin": pax["original_cabin"],
+        "group_id": pax["group_id"],
+        "group_integrity": pax["group_integrity"],
+        "group_size": pax["group_size"],
+        "ssr_flags": pax["ssr_flags"],
+        "downstream_deadline": pax["downstream_deadline"],
     }
-    # Include extra_legroom of current AC-1 seat when available
-    if "extra_legroom" in state.ac1_seat_info[seat_id]:
-        result["current_seat_extra_legroom"] = state.ac1_seat_info[seat_id]["extra_legroom"]
+
+    if passenger_id in ep.bookings:
+        booking = ep.bookings[passenger_id]
+        result["current_booking"] = {
+            "flight_id": booking["flight_id"],
+            "cabin": booking["cabin"],
+        }
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Tool 2: assign_seat
+# Tool 3: list_alternative_flights
 # ---------------------------------------------------------------------------
 
-def tool_assign_seat(state, passenger_id: str, target_seat_id: str) -> dict:
-    """
-    Assign a passenger from their AC-1 seat to a specific AC-2 seat.
+def tool_list_alternative_flights(ep) -> dict:
+    """Return all alternative flights with current availability."""
+    ep.info_calls["list_alternative_flights"] = (
+        ep.info_calls.get("list_alternative_flights", 0) + 1
+    )
 
-    Mutates: state.assignments (sets seat_ac2 for the passenger's row).
-    """
-    # 1. Passenger must exist
-    if passenger_id not in state.passengers_by_id:
+    flights_list = []
+    for fid, fl in ep.flights.items():
+        flights_list.append({
+            "flight_id": fid,
+            "departure_time": fl["departure_time"],
+            "arrival_time": fl["arrival_time"],
+            "cabin_availability": dict(ep.flight_availability[fid]),
+            "supports_ssr": fl["supports_ssr"],
+        })
+
+    return {"status": "success", "flights": flights_list}
+
+
+# ---------------------------------------------------------------------------
+# Tool 4: get_flight_details
+# ---------------------------------------------------------------------------
+
+def tool_get_flight_details(ep, flight_id: str) -> dict:
+    """Return full details for a single flight including current availability."""
+    ep.info_calls["get_flight_details"] = (
+        ep.info_calls.get("get_flight_details", 0) + 1
+    )
+
+    if flight_id not in ep.flights:
         return {
-            "status":  "error",
+            "status": "error",
+            "message": f"Flight {flight_id} does not exist",
+        }
+
+    fl = ep.flights[flight_id]
+    return {
+        "status": "success",
+        "flight_id": flight_id,
+        "departure_time": fl["departure_time"],
+        "arrival_time": fl["arrival_time"],
+        "cabin_availability": dict(ep.flight_availability[flight_id]),
+        "supports_ssr": fl["supports_ssr"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: book_passenger
+# ---------------------------------------------------------------------------
+
+def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> dict:
+    """
+    Book a single passenger onto a flight in the specified cabin.
+
+    Validation chain:
+    1. Passenger exists
+    2. Passenger not already booked
+    3. Flight exists
+    4. Cabin is valid
+    5. Cabin has availability > 0
+    6. Flight supports all of passenger's SSR flags
+    7. If downstream_deadline, arrival_time <= deadline
+    8. If hard group member, warn (should use book_group)
+
+    On success: decrements availability, adds to bookings.
+    """
+    # 1. Passenger exists
+    if passenger_id not in ep.passengers:
+        return {
+            "status": "error",
             "message": f"Passenger {passenger_id} does not exist",
         }
 
-    # 2. Passenger must not already be on AC-2
-    seat_ac2 = state.assignments.loc[passenger_id, "seat_ac2"]
-    if pd.notna(seat_ac2):
+    # 2. Not already booked
+    if passenger_id in ep.bookings:
+        existing = ep.bookings[passenger_id]
         return {
-            "status":  "error",
-            "message": f"Passenger {passenger_id} is already assigned to AC-2 seat {seat_ac2}",
+            "status": "error",
+            "message": (
+                f"Passenger {passenger_id} is already booked on "
+                f"{existing['flight_id']} in {existing['cabin']}"
+            ),
         }
 
-    # 3. Target seat must exist on AC-2
-    if target_seat_id not in state.ac2_seat_set:
+    # 3. Flight exists
+    if flight_id not in ep.flights:
         return {
-            "status":  "error",
-            "message": f"Seat {target_seat_id} does not exist on AC-2",
+            "status": "error",
+            "message": f"Flight {flight_id} does not exist",
         }
 
-    # 4. Target seat must be unoccupied
-    occupied_mask = state.assignments["seat_ac2"] == target_seat_id
-    occupied = state.assignments.loc[occupied_mask]
-    if not occupied.empty:
-        occupant_id = occupied.index[0]
+    # 4. Valid cabin
+    if cabin not in VALID_CABINS:
         return {
-            "status":  "error",
-            "message": f"Seat {target_seat_id} on AC-2 is already occupied by {occupant_id}",
+            "status": "error",
+            "message": f"Invalid cabin '{cabin}'. Must be one of: {sorted(VALID_CABINS)}",
         }
 
-    pax      = state.passengers_by_id[passenger_id]
-    from_seat = state.assignments.loc[passenger_id, "seat_ac1"]
-    ac2_seat  = state.ac2_seat_info[target_seat_id]
+    # 5. Availability
+    avail = ep.flight_availability[flight_id].get(cabin, 0)
+    if avail <= 0:
+        return {
+            "status": "error",
+            "message": f"No {cabin} seats available on {flight_id}",
+        }
 
-    cabin_match = pax["cabin"] == ac2_seat["cabin"]
-    window_pref, legroom_pref = _preference_satisfied(pax, ac2_seat)
+    pax = ep.passengers[passenger_id]
+    fl = ep.flights[flight_id]
 
-    # Commit the assignment.
-    # seat_ac2 is loaded as float64 (all-NaN column from CSV); upcast to object
-    # so it can hold string seat IDs alongside NaN values.
-    if state.assignments["seat_ac2"].dtype != object:
-        state.assignments["seat_ac2"] = state.assignments["seat_ac2"].astype(object)
-    state.assignments.loc[passenger_id, "seat_ac2"] = target_seat_id
+    # 6. SSR compatibility
+    if pax["ssr_flags"]:
+        supported = set(fl["supports_ssr"])
+        required = set(pax["ssr_flags"])
+        missing = required - supported
+        if missing:
+            return {
+                "status": "error",
+                "message": (
+                    f"Flight {flight_id} does not support SSR: {sorted(missing)}. "
+                    f"Passenger {passenger_id} requires {sorted(required)}, "
+                    f"flight supports {sorted(supported)}"
+                ),
+            }
 
-    return {
-        "status":                       "success",
-        "passenger_id":                 passenger_id,
-        "from_seat_ac1":                from_seat,
-        "to_seat_ac2":                  target_seat_id,
-        "cabin_match":                  cabin_match,
-        "window_preference_satisfied":  window_pref,
-        "legroom_preference_satisfied": legroom_pref,
+    # 7. Deadline check
+    deadline_met = None
+    if pax["downstream_deadline"]:
+        if not meets_deadline(fl["arrival_time"], pax["downstream_deadline"]):
+            return {
+                "status": "error",
+                "message": (
+                    f"Flight {flight_id} arrives at {fl['arrival_time']} "
+                    f"which is after passenger {passenger_id}'s deadline "
+                    f"of {pax['downstream_deadline']}"
+                ),
+            }
+        deadline_met = True
+
+    # 8. Hard group warning
+    warnings = []
+    if pax["group_id"] and pax["group_integrity"] == "hard":
+        warnings.append(
+            f"Passenger {passenger_id} is in hard group {pax['group_id']}. "
+            f"Consider using book_group to keep the group together."
+        )
+
+    # --- Commit booking ---
+    ep.flight_availability[flight_id][cabin] -= 1
+    ep.bookings[passenger_id] = {"flight_id": flight_id, "cabin": cabin}
+    ep.last_booking_step = ep.step_count
+
+    cabin_match = pax["original_cabin"] == cabin
+
+    result = {
+        "status": "success",
+        "passenger_id": passenger_id,
+        "flight_id": flight_id,
+        "cabin": cabin,
+        "cabin_match": cabin_match,
+        "original_cabin": pax["original_cabin"],
     }
+    if deadline_met is not None:
+        result["deadline_met"] = deadline_met
+    if warnings:
+        result["warnings"] = warnings
+
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: swap_seats
+# Tool 6: book_group
 # ---------------------------------------------------------------------------
 
-def tool_swap_seats(state, passenger_id_1: str, passenger_id_2: str) -> dict:
+def tool_book_group(
+    ep,
+    group_id: str,
+    flight_id: str,
+    cabin_assignments: "Dict[str, str]",
+) -> dict:
     """
-    Swap the AC-2 seat assignments of two already-assigned passengers.
+    Book an entire group onto a single flight. Atomic — all or none.
 
-    Mutates: state.assignments (exchanges seat_ac2 values for both rows).
+    cabin_assignments maps passenger_id -> cabin for each group member.
+
+    Validation chain:
+    1. Group exists
+    2. All group members present in cabin_assignments and none already booked
+    3. Flight exists
+    4. All cabins valid
+    5. Sufficient capacity for all members
+    6. Flight supports SSR flags of all group members
+    7. Deadline check for all members
     """
-    # 1. Both passengers must exist
-    for pid in (passenger_id_1, passenger_id_2):
-        if pid not in state.passengers_by_id:
-            return {
-                "status":  "error",
-                "message": f"Passenger {pid} does not exist",
-            }
-
-    # 2. Must be two distinct passengers
-    if passenger_id_1 == passenger_id_2:
+    # 1. Group exists
+    if group_id not in ep.groups:
         return {
-            "status":  "error",
-            "message": "Cannot swap a passenger with themselves",
+            "status": "error",
+            "message": f"Group {group_id} does not exist",
         }
 
-    # 3. Both must already be assigned to AC-2
-    for pid in (passenger_id_1, passenger_id_2):
-        if pd.isna(state.assignments.loc[pid, "seat_ac2"]):
+    member_ids = ep.groups[group_id]
+
+    # 2. All members present and none already booked
+    provided_ids = set(cabin_assignments.keys())
+    expected_ids = set(member_ids)
+    if provided_ids != expected_ids:
+        missing = expected_ids - provided_ids
+        extra = provided_ids - expected_ids
+        parts = []
+        if missing:
+            parts.append(f"missing assignments for: {sorted(missing)}")
+        if extra:
+            parts.append(f"unknown members: {sorted(extra)}")
+        return {
+            "status": "error",
+            "message": f"cabin_assignments mismatch for group {group_id}: {'; '.join(parts)}",
+        }
+
+    for pid in member_ids:
+        if pid in ep.bookings:
+            existing = ep.bookings[pid]
             return {
-                "status":  "error",
-                "message": f"Passenger {pid} is not yet assigned to AC-2",
+                "status": "error",
+                "message": (
+                    f"Group member {pid} is already booked on "
+                    f"{existing['flight_id']} in {existing['cabin']}"
+                ),
             }
 
-    seat1 = state.assignments.loc[passenger_id_1, "seat_ac2"]
-    seat2 = state.assignments.loc[passenger_id_2, "seat_ac2"]
+    # 3. Flight exists
+    if flight_id not in ep.flights:
+        return {
+            "status": "error",
+            "message": f"Flight {flight_id} does not exist",
+        }
 
-    pax1 = state.passengers_by_id[passenger_id_1]
-    pax2 = state.passengers_by_id[passenger_id_2]
+    fl = ep.flights[flight_id]
 
-    # Metrics before the swap
-    cabin_match_1_before = pax1["cabin"] == state.ac2_seat_info[seat1]["cabin"]
-    cabin_match_2_before = pax2["cabin"] == state.ac2_seat_info[seat2]["cabin"]
-    win1_before,  leg1_before  = _preference_satisfied(pax1, state.ac2_seat_info[seat1])
-    win2_before,  leg2_before  = _preference_satisfied(pax2, state.ac2_seat_info[seat2])
+    # 4. All cabins valid
+    for pid, cabin in cabin_assignments.items():
+        if cabin not in VALID_CABINS:
+            return {
+                "status": "error",
+                "message": (
+                    f"Invalid cabin '{cabin}' for passenger {pid}. "
+                    f"Must be one of: {sorted(VALID_CABINS)}"
+                ),
+            }
 
-    # Execute the swap
-    state.assignments.loc[passenger_id_1, "seat_ac2"] = seat2
-    state.assignments.loc[passenger_id_2, "seat_ac2"] = seat1
+    # 5. Capacity check — compute total demand per cabin
+    cabin_demand: dict[str, int] = {}
+    for pid, cabin in cabin_assignments.items():
+        cabin_demand[cabin] = cabin_demand.get(cabin, 0) + 1
 
-    # Metrics after the swap (pax1 is now in seat2, pax2 in seat1)
-    cabin_match_1_after = pax1["cabin"] == state.ac2_seat_info[seat2]["cabin"]
-    cabin_match_2_after = pax2["cabin"] == state.ac2_seat_info[seat1]["cabin"]
-    win1_after,  leg1_after  = _preference_satisfied(pax1, state.ac2_seat_info[seat2])
-    win2_after,  leg2_after  = _preference_satisfied(pax2, state.ac2_seat_info[seat1])
+    for cabin, needed in cabin_demand.items():
+        available = ep.flight_availability[flight_id].get(cabin, 0)
+        if needed > available:
+            return {
+                "status": "error",
+                "message": (
+                    f"Not enough {cabin} seats on {flight_id}: "
+                    f"need {needed}, available {available}"
+                ),
+            }
+
+    # 6. SSR check for all members
+    supported = set(fl["supports_ssr"])
+    for pid in member_ids:
+        pax = ep.passengers[pid]
+        if pax["ssr_flags"]:
+            required = set(pax["ssr_flags"])
+            missing = required - supported
+            if missing:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Flight {flight_id} does not support SSR: {sorted(missing)}. "
+                        f"Group member {pid} requires {sorted(required)}, "
+                        f"flight supports {sorted(supported)}"
+                    ),
+                }
+
+    # 7. Deadline check for all members
+    for pid in member_ids:
+        pax = ep.passengers[pid]
+        if pax["downstream_deadline"]:
+            if not meets_deadline(fl["arrival_time"], pax["downstream_deadline"]):
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Flight {flight_id} arrives at {fl['arrival_time']} "
+                        f"which is after group member {pid}'s deadline "
+                        f"of {pax['downstream_deadline']}"
+                    ),
+                }
+
+    # --- Commit all bookings atomically ---
+    booked = []
+    for pid, cabin in cabin_assignments.items():
+        ep.flight_availability[flight_id][cabin] -= 1
+        ep.bookings[pid] = {"flight_id": flight_id, "cabin": cabin}
+        pax = ep.passengers[pid]
+        booked.append({
+            "passenger_id": pid,
+            "cabin": cabin,
+            "cabin_match": pax["original_cabin"] == cabin,
+            "original_cabin": pax["original_cabin"],
+        })
+
+    ep.last_booking_step = ep.step_count
 
     return {
         "status": "success",
-        "swap": [
-            {"passenger_id": passenger_id_1, "from_seat": seat1, "to_seat": seat2},
-            {"passenger_id": passenger_id_2, "from_seat": seat2, "to_seat": seat1},
-        ],
-        "improvement": {
-            passenger_id_1: {
-                "cabin_match_before":            cabin_match_1_before,
-                "cabin_match_after":             cabin_match_1_after,
-                "window_preference_before":      win1_before,
-                "window_preference_after":       win1_after,
-                "legroom_preference_before":     leg1_before,
-                "legroom_preference_after":      leg1_after,
-            },
-            passenger_id_2: {
-                "cabin_match_before":            cabin_match_2_before,
-                "cabin_match_after":             cabin_match_2_after,
-                "window_preference_before":      win2_before,
-                "window_preference_after":       win2_after,
-                "legroom_preference_before":     leg2_before,
-                "legroom_preference_after":      leg2_after,
-            },
-        },
+        "group_id": group_id,
+        "flight_id": flight_id,
+        "booked": booked,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tool 7: finalize_plan
+# ---------------------------------------------------------------------------
+
+def tool_finalize_plan(ep) -> dict:
+    """
+    End the episode and trigger grading.
+
+    Returns a status dict. The environment.step() method handles
+    computing and attaching the grader score.
+    """
+    ep.done = True
+    return {"status": "success", "message": "Plan finalized. Grading in progress."}

@@ -19,137 +19,167 @@ except ImportError:
     from openai import OpenAI
 
 try:
-    from client import SeatReassignmentEnv
-    from models import SeatReassignmentAction
+    from client import FlightRebookingEnv
+    from models import FlightRebookingAction
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from client import SeatReassignmentEnv
-    from models import SeatReassignmentAction
+    from client import FlightRebookingEnv
+    from models import FlightRebookingAction
 
 # ---------------------------------------------------------------------------
 # Environment variables
 # ---------------------------------------------------------------------------
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"#"Qwen/Qwen2.5-72B-Instruct"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 IMAGE_NAME = os.getenv("IMAGE_NAME")
 ENV_URL = os.getenv("ENV_URL") or os.getenv("SERVER_URL") or "http://localhost:8000"
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-BENCHMARK = "seat_reassignment"
+BENCHMARK = "flight_rebooking"
 TEMPERATURE = 0.3
 MAX_TOKENS = 1000
 
 # ---------------------------------------------------------------------------
-# System prompt (single unified prompt for all tasks)
+# System prompt (constant across all difficulty tiers)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are an airline operations agent. An aircraft swap has occurred — passengers from Aircraft-1 (AC-1) must be reassigned to Aircraft-2 (AC-2). The two aircraft have the same cabin classes but different seating layouts.
+SYSTEM_PROMPT = """You are an airline operations agent. A scheduled flight has been cancelled and all passengers must be rebooked onto alternative flights to the same destination. You operate at the inventory level — placing passengers into available cabin buckets on flights, NOT assigning specific seats.
 
 YOUR GOAL:
-Reassign every passenger from AC-1 to AC-2, satisfying constraints in this priority order:
-1. CABIN CLASS (mandatory) — business passengers must go to business seats, economy passengers must go to economy seats.
-2. WINDOW PREFERENCE (if applicable) — if a passenger has paid_window=True, assign them to a window seat on AC-2.
-3. LEGROOM PREFERENCE (if applicable) — if a passenger has paid_legroom=True, assign them to a seat with extra legroom on AC-2.
+Produce a rebooking plan that gets every passenger to their destination while respecting constraints in this priority order:
 
-Only enforce the preferences that exist for a given passenger. If a passenger has no paid preferences, cabin class alone matters.
+1. HARD CONSTRAINTS (must not violate):
+   - SSR compatibility: passengers with special service requirements (UM, WCHR, pet_cabin, pet_cargo) can only go on flights that support those SSRs.
+   - Hard group integrity: passengers in a "hard" group must all be on the same flight.
+   - Downstream deadlines: if a passenger has a connection deadline, their new flight must arrive by that time.
+
+2. COVERAGE: every passenger should be rebooked onto some flight.
+
+3. CABIN MATCHING: place passengers in their original cabin class (economy, premium_economy, business) when possible.
+
+4. PRIORITY TIERS: higher-priority passengers (tier 1 is highest, tier 5 is lowest) should get better outcomes when trade-offs are needed.
+
+5. SOFT GROUP INTEGRITY: passengers in a "soft" group should be kept together when possible, but splitting is acceptable.
+
+6. FALLBACK ORDER: if original cabin is unavailable, try split-cabin on same flight before splitting across flights.
 
 TOOLS AVAILABLE:
-You have up to three tools depending on the task. Each turn you must call exactly one tool.
+Each turn you must call exactly one tool.
 
-1. get_passenger_details(seat_id)
-   - Fetches the passenger info for an AC-1 seat
-   - Returns: passenger_id, name, cabin, and any applicable preference fields (e.g. paid_window, paid_legroom)
-   - Use this to learn a passenger's preferences before assigning them
+1. list_passengers()
+   - Returns a summary of all passengers: ID, priority tier, group ID, and flags for SSR/deadline.
+   - Call this first to plan your approach.
 
-2. assign_seat(passenger_id, target_seat_id)
-   - Moves a passenger from AC-1 to a specific AC-2 seat
-   - The passenger must still be on AC-1; the AC-2 seat must be empty
-   - Returns: confirmation including cabin_match and any preference satisfaction fields
+2. get_passenger_details(passenger_id)
+   - Returns full details: original cabin, SSR flags, group membership, deadline, priority.
+   - Use before booking a passenger whose constraints you need to check.
 
-3. swap_seats(passenger_id_1, passenger_id_2)  [if available]
-   - Swaps two passengers who are BOTH already on AC-2
-   - Use this to correct earlier misplacements
+3. list_alternative_flights()
+   - Returns all available flights with per-cabin seat counts, times, and SSR support.
+   - Seat counts update after bookings. Call again to refresh availability.
+
+4. get_flight_details(flight_id)
+   - Returns details for one specific flight including current availability.
+
+5. book_passenger(passenger_id, flight_id, cabin)
+   - Books one passenger onto a flight in the specified cabin (economy|premium_economy|business).
+   - Will be rejected if: no seats, SSR mismatch, deadline violation, or already booked.
+   - For hard group members, prefer book_group instead.
+
+6. book_group(group_id, flight_id, cabin_assignments)
+   - Books an entire group onto one flight atomically. All succeed or all fail.
+   - cabin_assignments is a dict mapping each passenger_id to their cabin.
+
+7. finalize_plan()
+   - Call this when you are done. Triggers final scoring. Unbooked passengers count as failures.
 
 ACTION FORMAT:
-Respond with ONLY a raw JSON object and absolutely no other text.
-Do not include any reasoning, conversational text, or explanations.
-Do NOT use markdown code blocks (e.g., ```json or ```). Respond ONLY with the JSON itself.
+Respond with ONLY a raw JSON object. No reasoning, no markdown, no extra text.
 Examples:
-{"tool_name": "get_passenger_details", "args": {"seat_id": "1A"}}
-{"tool_name": "assign_seat", "args": {"passenger_id": "PAX-003", "target_seat_id": "3A"}}
-{"tool_name": "swap_seats", "args": {"passenger_id_1": "PAX-003", "passenger_id_2": "PAX-007"}}
+{"tool_name": "list_passengers", "args": {}}
+{"tool_name": "get_passenger_details", "args": {"passenger_id": "PAX-001"}}
+{"tool_name": "list_alternative_flights", "args": {}}
+{"tool_name": "get_flight_details", "args": {"flight_id": "FL-201"}}
+{"tool_name": "book_passenger", "args": {"passenger_id": "PAX-001", "flight_id": "FL-201", "cabin": "business"}}
+{"tool_name": "book_group", "args": {"group_id": "GRP-001", "flight_id": "FL-201", "cabin_assignments": {"PAX-002": "economy", "PAX-003": "economy"}}}
+{"tool_name": "finalize_plan", "args": {}}
 
 STRATEGY:
-1. Fetch passenger details to discover preferences, prioritising passengers with the most constraints (legroom+window first, then window-only, then unconstrained).
-2. Assign passengers in order of constraint strictness — most constrained first:
-   a. Passengers with both paid_legroom and paid_window: target legroom window seats.
-   b. Passengers with paid_legroom only: target remaining legroom seats.
-   c. Passengers with paid_window only: target remaining window seats.
-   d. All other passengers: fill any open seat in the correct cabin class.
-3. If legroom seats exist on AC-2, reserve them for passengers who paid for legroom — do not waste them on unconstrained passengers.
-4. Use swap_seats to fix any misplacements discovered after assignment.
-5. You can read the AC-2 layout from the observation to identify which seats are windows or have legroom.
+1. Start with list_passengers and list_alternative_flights to survey the situation.
+2. Identify constrained passengers: those with SSR flags, deadlines, or hard group membership.
+3. Book the most constrained passengers first (hard groups, SSR+deadline combos).
+4. Then book remaining passengers in priority-tier order, matching original cabin.
+5. Use book_group for groups (especially hard groups) to keep them together atomically.
+6. After all passengers are booked, call finalize_plan.
+7. If a booking fails, check why and try an alternative flight or cabin.
 
 IMPORTANT:
-- NEVER assign a passenger to the wrong cabin class. This is the highest priority and cannot be violated.
-- Always fetch passenger details before assigning passengers whose preferences you do not yet know.
-- Each tool call is one step. You can see the current state of both aircraft after each step.
-- Use the step limit efficiently — avoid redundant fetches for passengers you have already queried."""
+- Always call list_passengers first to understand the problem.
+- Never violate hard constraints — the penalty is severe.
+- Book hard groups with book_group, not individual book_passenger calls.
+- Call finalize_plan when done — unbooked passengers hurt your score."""
 
 # ---------------------------------------------------------------------------
 # Task definitions: (task_name, task_id, max_steps)
 # ---------------------------------------------------------------------------
 TASKS = [
-    ("task_easy",   "easy",   24),
+    ("task_easy",   "easy",   30),
     ("task_medium", "medium", 60),
-    ("task_hard",   "hard",   60),
+    ("task_hard",   "hard",   90),
 ]
 
 # ---------------------------------------------------------------------------
-# State and Prompt formatting functions
+# State and prompt formatting
 # ---------------------------------------------------------------------------
+
 def format_main_task(task_id: str) -> str:
-    if task_id == "easy":
-        return "Task: Reassign all 8 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2), respecting cabin class."
-    if task_id == "hard":
-        return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2) respecting cabin class, window seat preferences, and extra legroom preferences."
-    return "Task: Reassign all 20 passengers from Aircraft-1 (AC-1) to Aircraft-2 (AC-2)."
-
-def format_state(obs) -> str:
-    parts = []
-
-    parts.append(
-        f"=== Step {obs.step_count}/{obs.max_steps} | "
-        f"Passengers remaining: {obs.passengers_remaining}/{obs.passengers_total} ==="
+    return (
+        "Task: A flight has been cancelled. Rebook all passengers onto "
+        "alternative flights, respecting constraints and priorities."
     )
 
-    parts.append(f"\nAC-1 layout: {json.dumps(obs.ac1_layout['layout'], indent=2)}")
-    parts.append(f"AC-2 layout: {json.dumps(obs.ac2_layout['layout'], indent=2)}")
 
-    parts.append(f"\nAC-1 seats still occupied (passengers to reassign): {obs.ac1_seats_occupied}")
+def format_state(obs) -> str:
+    parts = [
+        f"=== Step {obs.step_count}/{obs.max_steps} | "
+        f"Booked: {obs.passengers_booked}/{obs.passengers_total} | "
+        f"Remaining: {obs.passengers_remaining} ==="
+    ]
 
-    if obs.ac2_seat_assignments:
-        parts.append(f"\nAC-2 current assignments:")
-        for seat_id, pax_id in sorted(obs.ac2_seat_assignments.items()):
-            parts.append(f"  {seat_id} -> {pax_id}")
-    else:
-        parts.append(f"\nAC-2: No passengers assigned yet.")
+    if obs.booked_summary:
+        parts.append("\nCurrent bookings:")
+        for b in obs.booked_summary:
+            parts.append(f"  {b['passenger_id']} -> {b['flight_id']} ({b['cabin']})")
+
+    if obs.flights_snapshot:
+        parts.append("\nFlight availability:")
+        for fl in obs.flights_snapshot:
+            avail = ", ".join(
+                f"{c}={n}" for c, n in fl["cabin_availability"].items() if n > 0
+            )
+            parts.append(
+                f"  {fl['flight_id']} dep={fl['departure_time']} arr={fl['arrival_time']} "
+                f"SSR={fl['supports_ssr']} [{avail}]"
+            )
 
     return "\n".join(parts)
 
+
 def format_instruction() -> str:
     return "Choose your next tool call. Respond with ONLY a JSON object."
+
 
 def format_result(item: dict) -> str:
     parts = []
     if item.get("result") is not None:
         parts.append(f"Last tool result: {json.dumps(item['result'], indent=2)}")
     if item.get("reward") is not None:
-        parts.append(f"Reward: {item['reward']:.2f} ({item.get('reward_reason', 'unknown')})")
-
+        parts.append(
+            f"Reward: {item['reward']:.2f} ({item.get('reward_reason', 'unknown')})"
+        )
     if not parts:
         return "Tool executed."
     return "\n".join(parts)
@@ -158,6 +188,7 @@ def format_result(item: dict) -> str:
 # ---------------------------------------------------------------------------
 # Action parsing
 # ---------------------------------------------------------------------------
+
 def parse_llm_response(response_text: str) -> Optional[dict]:
     """Parse LLM response into a tool call dict. Returns None on failure."""
     text = response_text.strip()
@@ -184,6 +215,7 @@ def parse_llm_response(response_text: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # LLM call
 # ---------------------------------------------------------------------------
+
 def get_agent_action(
     client: OpenAI, obs, conversation_history: list, task_id: str
 ) -> Optional[dict]:
@@ -191,20 +223,20 @@ def get_agent_action(
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     if not conversation_history:
-        # First query — include full task description + state
         user_content = "\n\n".join([
             format_main_task(task_id),
             format_state(obs),
-            format_instruction()
+            format_instruction(),
         ])
         messages.append({"role": "user", "content": user_content})
     else:
-        # Subsequent queries — replay recent history as interleaved turns
         messages.append({"role": "user", "content": format_main_task(task_id)})
 
         recent_history = conversation_history[-6:]
         for i, item in enumerate(recent_history):
-            messages.append({"role": "assistant", "content": json.dumps(item["action"])})
+            messages.append(
+                {"role": "assistant", "content": json.dumps(item["action"])}
+            )
 
             user_parts = [format_result(item)]
             if i == len(recent_history) - 1:
@@ -222,48 +254,57 @@ def get_agent_action(
             stream=False,
         )
         response_text = (completion.choices[0].message.content or "").strip()
-        parsed = parse_llm_response(response_text)
-
-        if parsed is None:
-            return None
-
-        return parsed
-    except Exception as exc:
+        return parse_llm_response(response_text)
+    except Exception:
         return None
 
 
 # ---------------------------------------------------------------------------
 # Fallback action
 # ---------------------------------------------------------------------------
+
 def fallback_action(obs) -> dict:
-    """Simple fallback: fetch the first unqueried AC-1 seat."""
-    if obs.ac1_seats_occupied and obs.ac2_seats_available:
-        seat_id = obs.ac1_seats_occupied[0]
-        return {"tool_name": "get_passenger_details", "args": {"seat_id": seat_id}}
-    return {"tool_name": "get_passenger_details", "args": {"seat_id": "1A"}}
+    """Simple fallback: list passengers if nothing booked yet, else list flights."""
+    if obs.passengers_booked == 0:
+        return {"tool_name": "list_passengers", "args": {}}
+    return {"tool_name": "list_alternative_flights", "args": {}}
 
 
 # ---------------------------------------------------------------------------
 # Mandatory logging
 # ---------------------------------------------------------------------------
+
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+def log_step(
+    step: int, action: str, reward: float, done: bool, error: Optional[str]
+) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(
+    success: bool, steps: int, score: float, rewards: List[float]
+) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Per-task episode runner
 # ---------------------------------------------------------------------------
+
 async def run_task(
     task_name: str,
     task_id: str,
@@ -280,7 +321,7 @@ async def run_task(
 
     env = None
     try:
-        env = SeatReassignmentEnv(base_url=ENV_URL)
+        env = FlightRebookingEnv(base_url=ENV_URL)
         result = await env.reset(task_id=task_id)
         obs = result.observation
 
@@ -293,18 +334,19 @@ async def run_task(
             if action_dict is None:
                 action_dict = fallback_action(obs)
 
-            action_summary = f"{action_dict['tool_name']}({json.dumps(action_dict['args'])})"
+            action_summary = (
+                f"{action_dict['tool_name']}({json.dumps(action_dict['args'])})"
+            )
 
-
-            result = await env.step(SeatReassignmentAction(
-                tool_name=action_dict["tool_name"],
-                args=action_dict["args"],
-            ))
+            result = await env.step(
+                FlightRebookingAction(
+                    tool_name=action_dict["tool_name"],
+                    args=action_dict["args"],
+                )
+            )
             obs = result.observation
             reward = result.reward or 0.0
             done = result.done
-
-
 
             rewards.append(reward)
             steps_taken = step
@@ -314,7 +356,10 @@ async def run_task(
                 if obs.tool_result and obs.tool_result.get("status") == "error"
                 else None
             )
-            log_step(step=step, action=action_summary, reward=reward, done=done, error=error)
+            log_step(
+                step=step, action=action_summary,
+                reward=reward, done=done, error=error,
+            )
 
             conversation_history.append({
                 "action": action_dict,
@@ -331,7 +376,7 @@ async def run_task(
         success = score >= 0.5
         score = min(max(score, 0.0), 1.0)
 
-    except Exception as e:
+    except Exception:
         pass
 
     finally:
@@ -346,6 +391,7 @@ async def run_task(
 # ---------------------------------------------------------------------------
 # Main — loop over all tasks
 # ---------------------------------------------------------------------------
+
 async def main() -> None:
     try:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)

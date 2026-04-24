@@ -9,21 +9,22 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "seat_reassignment"
+name = "flight_rebooking"
 version = "0.1.0"
-description = "Seat Reassignment Inference environment for OpenEnv"
-requires-python = ">=3.10"
+description = "Flight Rebooking Inference environment for OpenEnv"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     # install from github
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
     "huggingface-hub>=1.9.0",
-    "openenv-core[core]>=0.2.2",
-    # Environment-specific dependencies
-    "pandas>=2.0.0",
+    "openenv-core[core]>=0.2.3",
     # Inference script dependencies
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -35,12 +36,12 @@ dev = [
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
 # or: python -m seat_reassignment.server.app
-server = "seat_reassignment.server.app:main"
+server = "flight_rebooking.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["seat_reassignment", "seat_reassignment.server"]
-package-dir = { "seat_reassignment" = ".", "seat_reassignment.server" = "server" }
+packages = ["flight_rebooking", "flight_rebooking.server"]
+package-dir = { "flight_rebooking" = ".", "flight_rebooking.server" = "server" }
 
 [tool.setuptools.package-data]
-seat_reassignment = ["data/**/*.json", "data/**/*.csv"]
+flight_rebooking = ["data/**/*.json"]

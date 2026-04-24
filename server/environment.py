@@ -1,31 +1,61 @@
 """
-Core environment implementation for the Airline Seat Reassignment task.
+Core environment implementation for the Flight Rebooking task.
 
-The agent interacts via three tools:
-  - get_passenger_details  → inspect an AC-1 seat
-  - assign_seat            → move a passenger from AC-1 to a specific AC-2 seat
-  - swap_seats             → swap two already-assigned AC-2 passengers
+A flight has been cancelled. The agent must rebook passengers onto
+alternative flights using 7 tools:
+  - list_passengers           -> survey all passengers
+  - get_passenger_details     -> inspect one passenger
+  - list_alternative_flights  -> survey flight inventory
+  - get_flight_details        -> inspect one flight
+  - book_passenger            -> commit one passenger to a flight/cabin
+  - book_group                -> commit an entire group atomically
+  - finalize_plan             -> end the episode and trigger grading
 
-An episode ends when all 20 passengers are assigned or max_steps is reached.
+An episode ends when finalize_plan is called, all passengers are booked,
+or the step limit is reached.
 """
 
+import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set
 from uuid import uuid4
 
-import pandas as pd
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import SeatReassignmentAction, SeatReassignmentObservation, SeatReassignmentState
-    from .tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
+    from ..models import (
+        FlightRebookingAction,
+        FlightRebookingObservation,
+        FlightRebookingState,
+    )
+    from .tools import (
+        tool_list_passengers,
+        tool_get_passenger_details,
+        tool_list_alternative_flights,
+        tool_get_flight_details,
+        tool_book_passenger,
+        tool_book_group,
+        tool_finalize_plan,
+    )
     from .rewards import RewardComputer
 except ImportError:
-    from models import SeatReassignmentAction, SeatReassignmentObservation, SeatReassignmentState
-    from server.tools import tool_assign_seat, tool_get_passenger_details, tool_swap_seats
+    from models import (
+        FlightRebookingAction,
+        FlightRebookingObservation,
+        FlightRebookingState,
+    )
+    from server.tools import (
+        tool_list_passengers,
+        tool_get_passenger_details,
+        tool_list_alternative_flights,
+        tool_get_flight_details,
+        tool_book_passenger,
+        tool_book_group,
+        tool_finalize_plan,
+    )
     from server.rewards import RewardComputer
 
 
@@ -35,45 +65,44 @@ except ImportError:
 
 @dataclass
 class EpisodeState:
-    # Data loaded from files — immutable during an episode
-    ac1_config: dict
-    ac2_config: dict
-    passengers_df: pd.DataFrame
-    seats_ac1_df: pd.DataFrame
-    seats_ac2_df: pd.DataFrame
+    # Immutable data loaded from files
+    passengers: Dict[str, dict] = field(default_factory=dict)
+    flights: Dict[str, dict] = field(default_factory=dict)
+    groups: Dict[str, List[str]] = field(default_factory=dict)
+    config: dict = field(default_factory=dict)
 
-    # Mutable assignment state — the only thing that changes per step
-    assignments: pd.DataFrame
+    # Mutable booking state
+    bookings: Dict[str, dict] = field(default_factory=dict)
+    flight_availability: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
-    # O(1) lookup structures built at reset time
-    passengers_by_id: Dict[str, dict]
-    ac1_seat_set: set
-    ac2_seat_set: set
-    ac1_seat_info: Dict[str, dict]
-    ac2_seat_info: Dict[str, dict]
+    # Tracking for reward computation
+    info_calls: Dict[str, int] = field(default_factory=dict)
+    last_booking_step: int = 0
+    passenger_details_fetched: Set[str] = field(default_factory=set)
 
-    # Task identity
-    task_id: str
+    # Whether list_alternative_flights has been called (for snapshot in obs)
+    flights_listed: bool = False
 
-    # Episode tracking
-    fetched_seats: set
-    step_count: int
-    max_steps: int
-    cumulative_reward: float
-    done: bool
+    # Episode metadata
+    task_id: str = ""
+    step_count: int = 0
+    max_steps: int = 0
+    cumulative_reward: float = 0.0
+    done: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
 
-class SeatReassignmentEnvironment(Environment):
+class FlightRebookingEnvironment(Environment):
     """
-    OpenEnv environment for airline seat reassignment.
+    OpenEnv environment for airline flight rebooking after cancellation.
 
-    An episode consists of an agent reassigning 20 passengers from AC-1 to AC-2
-    using three tools.  The episode ends when all passengers are reassigned or
-    the step limit is reached.
+    An episode consists of an agent rebooking passengers from a cancelled
+    flight onto alternative flights using 7 tools. The episode ends when
+    finalize_plan is called, all passengers are booked, or the step limit
+    is reached.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
@@ -82,85 +111,72 @@ class SeatReassignmentEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._episode: Optional[EpisodeState] = None
         self._reward_computer: Optional[RewardComputer] = None
-        # Data directory is two levels up from this file (project root / data)
         self._data_dir = Path(__file__).resolve().parent.parent / "data"
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, seed: Optional[int] = None, task_id: str = "medium") -> SeatReassignmentObservation:
-        """Load data, build lookup dicts, and return the initial observation."""
+    def reset(
+        self, seed: Optional[int] = None, task_id: str = "medium"
+    ) -> FlightRebookingObservation:
+        """Load data, build lookup structures, and return the initial observation."""
         episode_id = str(uuid4())
         self._state = State(episode_id=episode_id, step_count=0)
 
-        # --- resolve task-specific data directory ---
+        # Resolve data directory
         task_dir = self._data_dir / task_id
         if not task_dir.is_dir():
-            raise ValueError(f"Unknown task_id {task_id!r}: no data directory at {task_dir}")
+            raise ValueError(
+                f"Unknown task_id {task_id!r}: no data directory at {task_dir}"
+            )
 
-        # --- load files ---
-        with open(task_dir / "ac1_config.json") as f:
-            ac1_config = json.load(f)
-        with open(task_dir / "ac2_config.json") as f:
-            ac2_config = json.load(f)
+        # Load files
+        with open(task_dir / "config.json") as f:
+            config = json.load(f)
+        with open(task_dir / "passengers.json") as f:
+            passengers_list = json.load(f)["passengers"]
+        with open(task_dir / "flights.json") as f:
+            flights_list = json.load(f)["flights"]
 
-        seats_ac1_df  = pd.read_csv(task_dir / "seats_ac1.csv")
-        seats_ac2_df  = pd.read_csv(task_dir / "seats_ac2.csv")
-        passengers_df = pd.read_csv(task_dir / "passengers.csv")
+        # Build dicts
+        passengers = {p["passenger_id"]: p for p in passengers_list}
+        flights = {fl["flight_id"]: fl for fl in flights_list}
 
-        # assignments.csv: seat_ac2 column starts all-NaN (passengers not yet moved)
-        assignments_df = (
-            pd.read_csv(task_dir / "assignments.csv")
-            .copy()
-            .set_index("passenger_id")
-        )
+        # Build groups
+        groups: Dict[str, List[str]] = {}
+        for pid, pax in passengers.items():
+            gid = pax.get("group_id")
+            if gid:
+                groups.setdefault(gid, []).append(pid)
 
-        # --- build O(1) lookup structures ---
-        passengers_by_id: Dict[str, dict] = (
-            passengers_df.set_index("passenger_id").to_dict("index")
-        )
-        ac1_seat_set = set(seats_ac1_df["seat_id"])
-        ac2_seat_set = set(seats_ac2_df["seat_id"])
+        # Deep copy availability so bookings can decrement without mutating source
+        flight_availability = {
+            fid: copy.deepcopy(fl["cabin_availability"])
+            for fid, fl in flights.items()
+        }
 
-        # Include extra_legroom in seat_info if the CSV has that column
-        _ac1_cols = ["cabin", "seat_type"] + (
-            ["extra_legroom"] if "extra_legroom" in seats_ac1_df.columns else []
-        )
-        _ac2_cols = ["cabin", "seat_type"] + (
-            ["extra_legroom"] if "extra_legroom" in seats_ac2_df.columns else []
-        )
-        ac1_seat_info: Dict[str, dict] = (
-            seats_ac1_df.set_index("seat_id")[_ac1_cols].to_dict("index")
-        )
-        ac2_seat_info: Dict[str, dict] = (
-            seats_ac2_df.set_index("seat_id")[_ac2_cols].to_dict("index")
-        )
-
-        total_passengers = len(passengers_df)
-        max_steps = 3 * total_passengers
+        max_steps = config.get("max_steps", 60)
 
         self._episode = EpisodeState(
-            ac1_config=ac1_config,
-            ac2_config=ac2_config,
-            passengers_df=passengers_df,
-            seats_ac1_df=seats_ac1_df,
-            seats_ac2_df=seats_ac2_df,
-            assignments=assignments_df,
-            passengers_by_id=passengers_by_id,
-            ac1_seat_set=ac1_seat_set,
-            ac2_seat_set=ac2_seat_set,
-            ac1_seat_info=ac1_seat_info,
-            ac2_seat_info=ac2_seat_info,
+            passengers=passengers,
+            flights=flights,
+            groups=groups,
+            config=config,
+            bookings={},
+            flight_availability=flight_availability,
+            info_calls={},
+            last_booking_step=0,
+            passenger_details_fetched=set(),
+            flights_listed=False,
             task_id=task_id,
-            fetched_seats=set(),
             step_count=0,
             max_steps=max_steps,
             cumulative_reward=0.0,
             done=False,
         )
         self._reward_computer = RewardComputer(
-            total_passengers=total_passengers,
+            total_passengers=len(passengers),
             max_steps=max_steps,
         )
 
@@ -171,7 +187,9 @@ class SeatReassignmentEnvironment(Environment):
             done=False,
         )
 
-    def step(self, action: SeatReassignmentAction) -> SeatReassignmentObservation:  # type: ignore[override]
+    def step(
+        self, action: FlightRebookingAction  # type: ignore[override]
+    ) -> FlightRebookingObservation:
         """Execute one tool call and return the updated observation."""
         if self._episode is None:
             raise RuntimeError("step() called without reset()")
@@ -179,92 +197,119 @@ class SeatReassignmentEnvironment(Environment):
             raise RuntimeError("step() called on a terminated episode")
 
         ep = self._episode
+        rc = self._reward_computer
         ep.step_count += 1
         self._state.step_count += 1
 
         tool_name = action.tool_name
         args = action.args
 
-        # --- route tool call ---
+        # --- Route tool call ---
         try:
-            if tool_name == "get_passenger_details":
-                seat_id = args.get("seat_id", "")
-                # Record redundancy BEFORE the tool adds to fetched_seats
-                was_already_fetched = seat_id in ep.fetched_seats
-                tool_result = tool_get_passenger_details(ep, seat_id)
-                reward, reason = self._reward_computer.reward_for_fetch(
-                    is_redundant=was_already_fetched,
-                    is_error=tool_result["status"] == "error",
-                )
+            if tool_name == "list_passengers":
+                tool_result = tool_list_passengers(ep)
+                reward, reason = rc.reward_for_info_call("list_passengers", ep)
 
-            elif tool_name == "assign_seat":
-                tool_result = tool_assign_seat(
-                    ep,
-                    args.get("passenger_id", ""),
-                    args.get("target_seat_id", ""),
-                )
-                reward, reason = self._reward_computer.reward_for_assign(tool_result)
-
-            elif tool_name == "swap_seats":
-                tool_result = tool_swap_seats(
-                    ep,
-                    args.get("passenger_id_1", ""),
-                    args.get("passenger_id_2", ""),
-                )
-                if tool_result["status"] == "success":
-                    s = tool_result["swap"]
-                    pax1 = ep.passengers_by_id[s[0]["passenger_id"]]
-                    pax2 = ep.passengers_by_id[s[1]["passenger_id"]]
-                    reward, reason = self._reward_computer.reward_for_swap(
-                        tool_result,
-                        pax1, pax2,
-                        ep.ac2_seat_info[s[0]["from_seat"]],
-                        ep.ac2_seat_info[s[1]["from_seat"]],
-                        ep.ac2_seat_info[s[0]["to_seat"]],
-                        ep.ac2_seat_info[s[1]["to_seat"]],
+            elif tool_name == "get_passenger_details":
+                pid = args.get("passenger_id", "")
+                already_booked = pid in ep.bookings
+                tool_result = tool_get_passenger_details(ep, pid)
+                if tool_result["status"] == "error":
+                    reward, reason = rc.reward_for_failed_action(tool_result)
+                elif already_booked:
+                    reward, reason = rc.reward_for_info_call(
+                        "get_passenger_details_booked", ep
                     )
                 else:
-                    reward, reason = self._reward_computer.reward_for_swap(
-                        tool_result, {}, {}, {}, {}, {}, {}
+                    reward, reason = rc.reward_for_info_call(
+                        "get_passenger_details", ep
                     )
 
-            else:
-                tool_result = {"status": "error", "message": f"Unknown tool: {tool_name!r}"}
-                reward, reason = self._reward_computer.reward_for_invalid_tool()
+            elif tool_name == "list_alternative_flights":
+                tool_result = tool_list_alternative_flights(ep)
+                ep.flights_listed = True
+                reward, reason = rc.reward_for_info_call(
+                    "list_alternative_flights", ep
+                )
 
-        except Exception as exc:  # unexpected runtime error — keep episode alive
+            elif tool_name == "get_flight_details":
+                fid = args.get("flight_id", "")
+                tool_result = tool_get_flight_details(ep, fid)
+                if tool_result["status"] == "error":
+                    reward, reason = rc.reward_for_failed_action(tool_result)
+                else:
+                    reward, reason = rc.reward_for_info_call(
+                        "get_flight_details", ep
+                    )
+
+            elif tool_name == "book_passenger":
+                pid = args.get("passenger_id", "")
+                fid = args.get("flight_id", "")
+                cabin = args.get("cabin", "")
+                tool_result = tool_book_passenger(ep, pid, fid, cabin)
+                if tool_result["status"] == "success":
+                    pax = ep.passengers.get(pid, {})
+                    reward, reason = rc.reward_for_booking(
+                        tool_result, pax, ep
+                    )
+                else:
+                    reward, reason = rc.reward_for_failed_action(tool_result)
+
+            elif tool_name == "book_group":
+                gid = args.get("group_id", "")
+                fid = args.get("flight_id", "")
+                cabin_assignments = args.get("cabin_assignments", {})
+                tool_result = tool_book_group(ep, gid, fid, cabin_assignments)
+                if tool_result["status"] == "success":
+                    group_pax = [
+                        ep.passengers[pid]
+                        for pid in ep.groups.get(gid, [])
+                    ]
+                    reward, reason = rc.reward_for_group_booking(
+                        tool_result, group_pax, ep
+                    )
+                else:
+                    reward, reason = rc.reward_for_failed_action(tool_result)
+
+            elif tool_name == "finalize_plan":
+                tool_result = tool_finalize_plan(ep)
+                reward, reason = REWARD_FINALIZE, "Plan finalized"
+
+            else:
+                tool_result = {
+                    "status": "error",
+                    "message": f"Unknown tool: {tool_name!r}",
+                }
+                reward, reason = rc.reward_for_invalid_tool()
+
+        except Exception as exc:
             tool_result = {"status": "error", "message": f"Internal error: {exc}"}
-            reward, reason = self._reward_computer.reward_for_invalid_tool()
+            reward, reason = rc.reward_for_invalid_tool()
 
-        # --- check termination ---
-        all_assigned = ep.assignments["seat_ac2"].notna().all()
+        # --- Check termination ---
+        all_booked = len(ep.bookings) >= len(ep.passengers)
         step_limit_reached = ep.step_count >= ep.max_steps
-        done = bool(all_assigned or step_limit_reached)
+        done = bool(ep.done or all_booked or step_limit_reached)
 
-        # --- terminal reward ---
+        # --- Terminal grading ---
         if done:
-            terminal_reward, terminal_breakdown = self._reward_computer.terminal_reward(
-                assignments_df=ep.assignments,
-                passengers_df=ep.passengers_df,
-                ac2_seat_info=ep.ac2_seat_info,
-                total_steps=ep.step_count,
+            breakdown = rc.terminal_breakdown(
+                ep.bookings, ep.passengers, ep.flights, ep.groups
             )
-            reward += terminal_reward
-
-            grader = self._reward_computer.grader_score(
-                assignments_df=ep.assignments,
-                passengers_df=ep.passengers_df,
-                ac2_seat_info=ep.ac2_seat_info,
+            grader = rc.grader_score(
+                ep.bookings, ep.passengers, ep.flights, ep.groups
             )
 
-            if step_limit_reached and not all_assigned:
-                reason += " | Episode timed out — not all passengers assigned"
+            if step_limit_reached and not all_booked and not ep.done:
+                reason += " | Episode timed out — not all passengers booked"
+            elif all_booked and not ep.done:
+                reason += " | All passengers booked — auto-finalized"
             else:
-                reason += f" | Episode complete — terminal reward: {terminal_reward:.2f}"
+                reason += " | Episode complete"
 
             tool_result = {
                 **(tool_result or {}),
-                "terminal_breakdown": terminal_breakdown,
+                "terminal_breakdown": breakdown,
                 "grader_score": grader,
             }
             ep.done = True
@@ -279,19 +324,19 @@ class SeatReassignmentEnvironment(Environment):
         )
 
     @property
-    def state(self) -> SeatReassignmentState:  # type: ignore[override]
+    def state(self) -> FlightRebookingState:  # type: ignore[override]
         if self._episode is None:
-            return SeatReassignmentState()
+            return FlightRebookingState()
 
         ep = self._episode
-        assigned_count = int(ep.assignments["seat_ac2"].notna().sum())
+        n_booked = len(ep.bookings)
 
-        return SeatReassignmentState(
+        return FlightRebookingState(
             episode_id=self._state.episode_id,
             step_count=ep.step_count,
-            total_passengers=len(ep.passengers_df),
-            passengers_assigned=assigned_count,
-            passengers_remaining=len(ep.passengers_df) - assigned_count,
+            total_passengers=len(ep.passengers),
+            passengers_booked=n_booked,
+            passengers_remaining=len(ep.passengers) - n_booked,
             cumulative_reward=ep.cumulative_reward,
             is_complete=ep.done,
         )
@@ -306,37 +351,48 @@ class SeatReassignmentEnvironment(Environment):
         reward: float,
         reward_reason: str,
         done: bool,
-    ) -> SeatReassignmentObservation:
+    ) -> FlightRebookingObservation:
         ep = self._episode
+        n_booked = len(ep.bookings)
 
-        # AC-1 seats whose passengers have NOT yet been moved
-        unassigned_mask = ep.assignments["seat_ac2"].isna()
-        ac1_seats_occupied = sorted(
-            ep.assignments.loc[unassigned_mask, "seat_ac1"].tolist()
-        )
+        booked_summary = [
+            {
+                "passenger_id": pid,
+                "flight_id": booking["flight_id"],
+                "cabin": booking["cabin"],
+            }
+            for pid, booking in ep.bookings.items()
+        ]
 
-        # AC-2 current occupancy: seat_id → passenger_id
-        assigned_mask = ~unassigned_mask
-        assigned = ep.assignments.loc[assigned_mask]
-        ac2_occupied: Dict[str, str] = dict(zip(assigned["seat_ac2"], assigned.index))
+        # Only include flights snapshot if agent has called list_alternative_flights
+        flights_snapshot = None
+        if ep.flights_listed:
+            flights_snapshot = [
+                {
+                    "flight_id": fid,
+                    "departure_time": fl["departure_time"],
+                    "arrival_time": fl["arrival_time"],
+                    "cabin_availability": dict(ep.flight_availability[fid]),
+                    "supports_ssr": fl["supports_ssr"],
+                }
+                for fid, fl in ep.flights.items()
+            ]
 
-        # AC-2 available seats (sorted for deterministic ordering)
-        occupied_set = set(ac2_occupied.keys())
-        ac2_available = sorted(s for s in ep.ac2_seat_set if s not in occupied_set)
-
-        return SeatReassignmentObservation(
-            ac1_layout=ep.ac1_config,
-            ac2_layout=ep.ac2_config,
-            ac1_seats_occupied=ac1_seats_occupied,
-            ac2_seat_assignments=ac2_occupied,
-            ac2_seats_available=ac2_available,
-            passengers_remaining=int(unassigned_mask.sum()),
-            passengers_total=len(ep.passengers_df),
+        return FlightRebookingObservation(
+            passengers_total=len(ep.passengers),
+            passengers_booked=n_booked,
+            passengers_remaining=len(ep.passengers) - n_booked,
             tool_result=tool_result,
             reward_reason=reward_reason,
             step_count=ep.step_count,
             max_steps=ep.max_steps,
             cumulative_reward=ep.cumulative_reward,
+            booked_summary=booked_summary,
+            flights_snapshot=flights_snapshot,
             done=done,
             reward=reward,
         )
+
+
+# Import needed for finalize reward constant
+from server.rewards import REWARD_FINALIZE  # noqa: E402

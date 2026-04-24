@@ -1,2 +1,1 @@
-"""Seat Reassignment environment server components."""
-
+"""Flight Rebooking environment server components."""

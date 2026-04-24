@@ -1,533 +1,520 @@
 """
 Tests for server/rewards.py
 
-All DataFrames and dicts are constructed inline — no file I/O.
+All data is constructed inline — no file I/O.
 Run with: pytest tests/test_rewards.py -v
 """
 
-import pandas as pd
 import pytest
 
 from server.rewards import (
     RewardComputer,
-    REWARD_FETCH_NEUTRAL,
-    REWARD_FETCH_REDUNDANT,
-    REWARD_FETCH_ERROR,
-    REWARD_ASSIGN_CABIN_PREF,
-    REWARD_ASSIGN_CABIN_NOPREF,
-    REWARD_ASSIGN_CABIN_PREFMISS,
-    REWARD_ASSIGN_CABIN_MISMATCH,
-    REWARD_ASSIGN_ERROR,
-    REWARD_SWAP_IMPROVE,
-    REWARD_SWAP_NEUTRAL,
-    REWARD_SWAP_WORSE,
-    REWARD_SWAP_ERROR,
+    EPS,
+    PRIORITY_WEIGHTS,
+    priority_weight,
+    REWARD_LIST_PASSENGERS_FIRST,
+    REWARD_LIST_PASSENGERS_CHURN,
+    REWARD_GET_DETAILS_UNBOOKED,
+    REWARD_GET_DETAILS_BOOKED,
+    REWARD_LIST_FLIGHTS,
+    REWARD_GET_FLIGHT_DETAILS,
+    REWARD_SAME_CABIN_GROUP,
+    REWARD_UPGRADE,
+    REWARD_DOWNGRADE,
+    REWARD_DEADLINE_BONUS,
+    REWARD_HARD_VIOLATION,
+    REWARD_FAILED_BOOKING,
     REWARD_INVALID_TOOL,
-    REWARD_INCOMPLETE_PENALTY,
-    TERMINAL_W_CABIN,
-    TERMINAL_W_PREF,
-    TERMINAL_W_EFF,
+    GRADER_W_COVERAGE,
+    GRADER_W_CABIN_MATCH,
+    GRADER_W_GROUP_INTEGRITY,
+    GRADER_W_DEADLINE,
+    GRADER_W_SSR_INTEGRITY,
+    GRADER_HARD_PENALTY,
+    GROUP_SAME_FLIGHT_SAME_CABIN,
+    GROUP_SAME_FLIGHT_DIFF_CABIN,
+    GROUP_SPLIT_FLIGHTS_HARD,
+    GROUP_SPLIT_FLIGHTS_SOFT,
 )
 
 
 # ---------------------------------------------------------------------------
-# Shared fixtures
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def rc():
-    """RewardComputer with 4 total passengers and 20 max steps."""
-    return RewardComputer(total_passengers=4, max_steps=20)
+    """RewardComputer with 10 passengers and 60 max steps."""
+    return RewardComputer(total_passengers=10, max_steps=60)
 
 
-# Minimal passengers: P1 (business, paid_window), P2 (business, no pref),
-#                     P3 (economy, no pref),      P4 (economy, no pref)
-PASSENGERS = pd.DataFrame([
-    {"passenger_id": "P1", "name": "Alice", "seat_ac1": "1A", "cabin": "business", "paid_window": True},
-    {"passenger_id": "P2", "name": "Bob",   "seat_ac1": "1B", "cabin": "business", "paid_window": False},
-    {"passenger_id": "P3", "name": "Carol", "seat_ac1": "2A", "cabin": "economy",  "paid_window": False},
-    {"passenger_id": "P4", "name": "Dave",  "seat_ac1": "2B", "cabin": "economy",  "paid_window": False},
-])
+# Reusable test data — passengers, flights, bookings
+PASSENGERS = {
+    "P1": {"passenger_id": "P1", "name": "A", "priority_tier": 1, "original_cabin": "business",
+           "group_id": None, "group_integrity": None, "group_size": None,
+           "ssr_flags": ["UM"], "downstream_deadline": "14:00"},
+    "P2": {"passenger_id": "P2", "name": "B", "priority_tier": 2, "original_cabin": "business",
+           "group_id": "G1", "group_integrity": "hard", "group_size": 2,
+           "ssr_flags": [], "downstream_deadline": None},
+    "P3": {"passenger_id": "P3", "name": "C", "priority_tier": 3, "original_cabin": "economy",
+           "group_id": "G1", "group_integrity": "hard", "group_size": 2,
+           "ssr_flags": [], "downstream_deadline": None},
+    "P4": {"passenger_id": "P4", "name": "D", "priority_tier": 4, "original_cabin": "economy",
+           "group_id": "G2", "group_integrity": "soft", "group_size": 2,
+           "ssr_flags": [], "downstream_deadline": None},
+    "P5": {"passenger_id": "P5", "name": "E", "priority_tier": 5, "original_cabin": "economy",
+           "group_id": "G2", "group_integrity": "soft", "group_size": 2,
+           "ssr_flags": ["WCHR"], "downstream_deadline": "16:00"},
+}
 
-# AC-2 seat info used across terminal/grader tests
-AC2 = {
-    "B1": {"cabin": "business", "seat_type": "window"},
-    "B2": {"cabin": "business", "seat_type": "aisle"},
-    "E1": {"cabin": "economy",  "seat_type": "window"},
-    "E2": {"cabin": "economy",  "seat_type": "aisle"},
+GROUPS = {
+    "G1": ["P2", "P3"],
+    "G2": ["P4", "P5"],
+}
+
+FLIGHTS = {
+    "FL-A": {"flight_id": "FL-A", "departure_time": "09:00", "arrival_time": "12:00",
+             "cabin_availability": {"economy": 5, "business": 3},
+             "supports_ssr": ["UM", "WCHR"]},
+    "FL-B": {"flight_id": "FL-B", "departure_time": "13:00", "arrival_time": "16:00",
+             "cabin_availability": {"economy": 3, "business": 2},
+             "supports_ssr": ["WCHR"]},
 }
 
 
-def _assignments(mapping: dict, include_ac1: bool = True) -> pd.DataFrame:
-    """
-    Build an assignments DataFrame from {passenger_id: seat_ac2_or_None}.
-    Set index to passenger_id, mirroring what the environment does at reset().
-    """
-    rows = []
-    for pid, seat_ac2 in mapping.items():
-        row = {"passenger_id": pid, "seat_ac2": seat_ac2}
-        if include_ac1:
-            # seat_ac1 not used by reward methods but keeps the schema consistent
-            row["seat_ac1"] = pid.replace("P", "S")
-        rows.append(row)
-    return pd.DataFrame(rows).set_index("passenger_id")
+# ===========================================================================
+# 1. TestInfoCallRewards
+# ===========================================================================
+
+class TestInfoCallRewards:
+    def test_first_list_passengers_positive(self, rc):
+        """First call to list_passengers should give a small positive reward."""
+        # Simulate ep_state
+        class FakeEp:
+            info_calls = {"list_passengers": 1}
+            last_booking_step = 0
+            step_count = 1
+        reward, reason = rc.reward_for_info_call("list_passengers", FakeEp())
+        assert reward == REWARD_LIST_PASSENGERS_FIRST
+        assert reward > 0
+
+    def test_repeated_list_passengers_negative(self, rc):
+        """5th+ call with no intervening bookings -> churn penalty."""
+        class FakeEp:
+            info_calls = {"list_passengers": 5}
+            last_booking_step = 0
+            step_count = 10
+        reward, reason = rc.reward_for_info_call("list_passengers", FakeEp())
+        assert reward == REWARD_LIST_PASSENGERS_CHURN
+        assert reward < 0
+
+    def test_get_details_unbooked_positive(self, rc):
+        class FakeEp:
+            pass
+        reward, _ = rc.reward_for_info_call("get_passenger_details", FakeEp())
+        assert reward == REWARD_GET_DETAILS_UNBOOKED
+        assert reward > 0
+
+    def test_get_details_booked_negative(self, rc):
+        class FakeEp:
+            pass
+        reward, _ = rc.reward_for_info_call("get_passenger_details_booked", FakeEp())
+        assert reward == REWARD_GET_DETAILS_BOOKED
+        assert reward < 0
+
+    def test_list_flights_always_small_positive(self, rc):
+        class FakeEp:
+            info_calls = {"list_alternative_flights": 3}
+        reward, _ = rc.reward_for_info_call("list_alternative_flights", FakeEp())
+        assert reward == REWARD_LIST_FLIGHTS
+        assert reward > 0
 
 
 # ===========================================================================
-# Fetch rewards
+# 2. TestBookingRewards
 # ===========================================================================
 
-class TestRewardForFetch:
-    def test_neutral_new_seat(self, rc):
-        reward, reason = rc.reward_for_fetch(is_redundant=False, is_error=False)
-        assert reward == REWARD_FETCH_NEUTRAL
-        assert "new seat" in reason.lower() or "fetch" in reason.lower()
+class TestBookingRewards:
+    def test_same_cabin_high_reward(self, rc):
+        pax = {"priority_tier": 1, "original_cabin": "business"}
+        result = {"status": "success", "cabin": "business", "original_cabin": "business"}
+        reward, _ = rc.reward_for_booking(result, pax, None)
+        assert reward == pytest.approx(REWARD_SAME_CABIN_GROUP * priority_weight(1))
 
-    def test_redundant_seat(self, rc):
-        reward, reason = rc.reward_for_fetch(is_redundant=True, is_error=False)
-        assert reward == REWARD_FETCH_REDUNDANT
-        assert "redundant" in reason.lower()
+    def test_upgrade_medium_reward(self, rc):
+        pax = {"priority_tier": 3, "original_cabin": "economy"}
+        result = {"status": "success", "cabin": "business", "original_cabin": "economy"}
+        reward, _ = rc.reward_for_booking(result, pax, None)
+        assert reward == pytest.approx(REWARD_UPGRADE * priority_weight(3))
 
-    def test_error_seat(self, rc):
-        reward, reason = rc.reward_for_fetch(is_redundant=False, is_error=True)
-        assert reward == REWARD_FETCH_ERROR
-        assert "error" in reason.lower()
+    def test_downgrade_small_reward(self, rc):
+        pax = {"priority_tier": 2, "original_cabin": "business"}
+        result = {"status": "success", "cabin": "economy", "original_cabin": "business"}
+        reward, _ = rc.reward_for_booking(result, pax, None)
+        assert reward == pytest.approx(REWARD_DOWNGRADE * priority_weight(2))
 
-    def test_error_takes_precedence_over_redundant(self, rc):
-        """If a seat was already fetched AND the tool errors, error penalty applies."""
-        reward, _ = rc.reward_for_fetch(is_redundant=True, is_error=True)
-        assert reward == REWARD_FETCH_ERROR
+    def test_priority_weight_scaling(self, rc):
+        """Tier 1 gets higher reward than Tier 5 for the same outcome."""
+        result = {"status": "success", "cabin": "economy", "original_cabin": "economy"}
+        pax1 = {"priority_tier": 1, "original_cabin": "economy"}
+        pax5 = {"priority_tier": 5, "original_cabin": "economy"}
+        r1, _ = rc.reward_for_booking(result, pax1, None)
+        r5, _ = rc.reward_for_booking(result, pax5, None)
+        assert r1 > r5
 
+    def test_deadline_met_bonus(self, rc):
+        pax = {"priority_tier": 2, "original_cabin": "economy"}
+        result = {"status": "success", "cabin": "economy", "original_cabin": "economy",
+                  "deadline_met": True}
+        reward_with, _ = rc.reward_for_booking(result, pax, None)
 
-# ===========================================================================
-# Assign rewards
-# ===========================================================================
+        result_no_dl = {"status": "success", "cabin": "economy", "original_cabin": "economy"}
+        reward_without, _ = rc.reward_for_booking(result_no_dl, pax, None)
 
-class TestRewardForAssign:
-    def _result(self, cabin_match, window_pref=None, legroom_pref=None, status="success"):
-        """Build a mock assign tool_result using the new field names."""
-        return {
-            "status":                       status,
-            "cabin_match":                  cabin_match,
-            "window_preference_satisfied":  window_pref,
-            "legroom_preference_satisfied": legroom_pref,
-        }
+        assert reward_with > reward_without
+        expected_bonus = REWARD_DEADLINE_BONUS * priority_weight(2)
+        assert reward_with == pytest.approx(reward_without + expected_bonus)
 
-    def test_cabin_match_preference_satisfied(self, rc):
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=True))
-        assert reward == REWARD_ASSIGN_CABIN_PREF
-        assert "all preferences satisfied" in reason.lower()
+    def test_failed_booking_small_penalty(self, rc):
+        result = {"status": "error", "message": "No seats available"}
+        pax = {"priority_tier": 3, "original_cabin": "economy"}
+        reward, _ = rc.reward_for_booking(result, pax, None)
+        assert reward == REWARD_FAILED_BOOKING
+        assert reward < 0
 
-    def test_cabin_match_no_preference(self, rc):
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=None))
-        assert reward == REWARD_ASSIGN_CABIN_NOPREF
-        assert "no preferences" in reason.lower()
-
-    def test_cabin_match_preference_missed(self, rc):
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=False))
-        assert reward == REWARD_ASSIGN_CABIN_PREFMISS
-        assert "not satisfied" in reason.lower()
-
-    def test_cabin_mismatch(self, rc):
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=False, window_pref=None))
-        assert reward == REWARD_ASSIGN_CABIN_MISMATCH
-        assert "mismatch" in reason.lower()
-
-    def test_cabin_mismatch_ignores_preference(self, rc):
-        """Cabin mismatch penalty applies even if preference happens to be True."""
-        reward, _ = rc.reward_for_assign(
-            self._result(cabin_match=False, window_pref=True))
-        assert reward == REWARD_ASSIGN_CABIN_MISMATCH
-
-    def test_error_result(self, rc):
-        result = {"status": "error", "message": "Seat does not exist"}
-        reward, reason = rc.reward_for_assign(result)
-        assert reward == REWARD_ASSIGN_ERROR
-        assert "error" in reason.lower()
-
-    def test_both_prefs_satisfied(self, rc):
-        """Window + legroom both satisfied → PREF tier."""
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=True, legroom_pref=True))
-        assert reward == REWARD_ASSIGN_CABIN_PREF
-        assert "all preferences satisfied" in reason.lower()
-
-    def test_partial_prefs_satisfied(self, rc):
-        """Window satisfied, legroom missed → NOPREF (partial) tier."""
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=True, legroom_pref=False))
-        assert reward == REWARD_ASSIGN_CABIN_NOPREF
-        assert "some preferences satisfied" in reason.lower()
-
-    def test_both_prefs_missed(self, rc):
-        """Window + legroom both missed → PREFMISS tier."""
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=False, legroom_pref=False))
-        assert reward == REWARD_ASSIGN_CABIN_PREFMISS
-        assert "not satisfied" in reason.lower()
-
-    def test_legroom_only_satisfied(self, rc):
-        """Only legroom paid, and satisfied → PREF tier."""
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=None, legroom_pref=True))
-        assert reward == REWARD_ASSIGN_CABIN_PREF
-
-    def test_legroom_only_missed(self, rc):
-        """Only legroom paid, and missed → PREFMISS tier."""
-        reward, reason = rc.reward_for_assign(
-            self._result(cabin_match=True, window_pref=None, legroom_pref=False))
-        assert reward == REWARD_ASSIGN_CABIN_PREFMISS
+    def test_invalid_tool_penalty(self, rc):
+        reward, _ = rc.reward_for_invalid_tool()
+        assert reward == REWARD_INVALID_TOOL
+        assert reward < 0
 
 
 # ===========================================================================
-# Swap rewards
-# ===========================================================================
-
-class TestRewardForSwap:
-    """
-    Passengers used:
-      pax_biz_pref  — business, paid_window=True
-      pax_biz_nopref — business, paid_window=False
-    Seats used:
-      biz_window — business window
-      biz_aisle  — business aisle
-    """
-
-    PAX_PREF   = {"cabin": "business", "paid_window": True}
-    PAX_NOPREF = {"cabin": "business", "paid_window": False}
-    BIZ_WIN    = {"cabin": "business", "seat_type": "window"}
-    BIZ_AISLE  = {"cabin": "business", "seat_type": "aisle"}
-
-    def _swap(self, rc, pax1_seat, pax2_seat, pax1_new, pax2_new, pax1=None, pax2=None):
-        pax1 = pax1 or self.PAX_PREF
-        pax2 = pax2 or self.PAX_NOPREF
-        return rc.reward_for_swap(
-            tool_result={"status": "success"},
-            pax1_info=pax1, pax2_info=pax2,
-            old_seat_1_info=pax1_seat, old_seat_2_info=pax2_seat,
-            new_seat_1_info=pax1_new,  new_seat_2_info=pax2_new,
-        )
-
-    def test_improvement(self, rc):
-        # pax_pref in aisle → window: constraint +1.5 (aisle→window for paid_window)
-        reward, reason = self._swap(
-            rc,
-            pax1_seat=self.BIZ_AISLE, pax2_seat=self.BIZ_WIN,   # before
-            pax1_new=self.BIZ_WIN,    pax2_new=self.BIZ_AISLE,   # after
-        )
-        assert reward == REWARD_SWAP_IMPROVE
-        assert "improved" in reason.lower()
-
-    def test_worse(self, rc):
-        # pax_pref in window → aisle: constraint drops
-        reward, reason = self._swap(
-            rc,
-            pax1_seat=self.BIZ_WIN,   pax2_seat=self.BIZ_AISLE,
-            pax1_new=self.BIZ_AISLE,  pax2_new=self.BIZ_WIN,
-        )
-        assert reward == REWARD_SWAP_WORSE
-        assert "worsened" in reason.lower()
-
-    def test_neutral(self, rc):
-        # Neither passenger has paid_window; both stay in same cabin — scores identical.
-        pax = {"cabin": "economy", "paid_window": False}
-        eco_win   = {"cabin": "economy", "seat_type": "window"}
-        eco_aisle = {"cabin": "economy", "seat_type": "aisle"}
-        reward, reason = rc.reward_for_swap(
-            tool_result={"status": "success"},
-            pax1_info=pax, pax2_info=pax,
-            old_seat_1_info=eco_win,   old_seat_2_info=eco_aisle,
-            new_seat_1_info=eco_aisle, new_seat_2_info=eco_win,
-        )
-        assert reward == REWARD_SWAP_NEUTRAL
-        assert "did not change" in reason.lower()
-
-    def test_error(self, rc):
-        result = {"status": "error", "message": "Passenger not yet assigned to AC-2"}
-        reward, reason = rc.reward_for_swap(
-            tool_result=result,
-            pax1_info=self.PAX_PREF,  pax2_info=self.PAX_NOPREF,
-            old_seat_1_info=self.BIZ_WIN,   old_seat_2_info=self.BIZ_AISLE,
-            new_seat_1_info=self.BIZ_AISLE, new_seat_2_info=self.BIZ_WIN,
-        )
-        assert reward == REWARD_SWAP_ERROR
-        assert "error" in reason.lower()
-
-
-# ===========================================================================
-# Invalid tool
-# ===========================================================================
-
-def test_reward_for_invalid_tool(rc):
-    reward, reason = rc.reward_for_invalid_tool()
-    assert reward == REWARD_INVALID_TOOL
-    assert "unrecognized" in reason.lower()
-
-
-# ===========================================================================
-# Terminal reward
-# ===========================================================================
-
-class TestTerminalReward:
-    def test_perfect_assignment(self, rc):
-        """All cabin matches, paid-window passenger in window, low step count."""
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": "E1", "P4": "E2"})
-        reward, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=4)
-
-        # cabin_score = 4/4 = 1.0
-        assert bd["cabin_score"] == pytest.approx(1.0)
-        # P1 (paid_window) → B1 (business window) → satisfied
-        assert bd["preference_score"] == pytest.approx(1.0)
-        # efficiency = 1 - 4/20 = 0.8
-        assert bd["efficiency_score"] == pytest.approx(0.8)
-        assert bd["incomplete_penalty"] == 0.0
-        expected = TERMINAL_W_CABIN * 1.0 + TERMINAL_W_PREF * 1.0 + TERMINAL_W_EFF * 0.8
-        assert reward == pytest.approx(expected)
-
-    def test_all_wrong_assignment(self, rc):
-        """All in wrong cabin, paid-window pax not in window, max steps used."""
-        # Business passengers → economy seats; economy → business
-        # P1 (paid_window, business) → E2 (economy aisle): cabin wrong, pref unsatisfied
-        asgn = _assignments({"P1": "E2", "P2": "E1", "P3": "B2", "P4": "B1"})
-        reward, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=20)
-
-        assert bd["cabin_score"] == pytest.approx(0.0)
-        assert bd["preference_score"] == pytest.approx(0.0)   # P1 → E2 (aisle, not window)
-        assert bd["efficiency_score"] == pytest.approx(0.0)   # 1 - 20/20
-        assert bd["incomplete_penalty"] == 0.0
-        assert reward == pytest.approx(0.0)
-
-    def test_partial_assignment(self, rc):
-        """Only 2 of 4 passengers assigned — incomplete penalty fires."""
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": None, "P4": None})
-        reward, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=10)
-
-        # cabin_score = 2 correct / 4 total = 0.5
-        assert bd["cabin_score"] == pytest.approx(0.5)
-        # P1 assigned to B1 (window) → pref satisfied; 1/1
-        assert bd["preference_score"] == pytest.approx(1.0)
-        assert bd["incomplete_penalty"] == REWARD_INCOMPLETE_PENALTY
-        assert "incomplete_penalty" in bd
-
-    def test_incomplete_at_step_limit(self, rc):
-        """Episode ends at max_steps with passengers unassigned — penalty applied."""
-        asgn = _assignments({"P1": None, "P2": None, "P3": None, "P4": None})
-        reward, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=20)
-
-        assert bd["cabin_score"] == pytest.approx(0.0)
-        assert bd["incomplete_penalty"] == REWARD_INCOMPLETE_PENALTY
-        assert bd["efficiency_score"] == pytest.approx(0.0)
-
-    def test_breakdown_keys_present(self, rc):
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": "E1", "P4": "E2"})
-        _, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=8)
-        assert set(bd.keys()) == {
-            "cabin_score", "preference_score", "efficiency_score",
-            "weighted_total", "incomplete_penalty",
-        }
-
-    def test_weighted_total_matches_return_value(self, rc):
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": "E1", "P4": "E2"})
-        reward, bd = rc.terminal_reward(asgn, PASSENGERS, AC2, total_steps=8)
-        assert reward == pytest.approx(bd["weighted_total"])
-
-
-# ===========================================================================
-# Grader score
+# 3. TestGraderScore
 # ===========================================================================
 
 class TestGraderScore:
-    def test_perfect_returns_one(self, rc):
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": "E1", "P4": "E2"})
-        score = rc.grader_score(asgn, PASSENGERS, AC2)
+    def test_perfect_score_all_booked_same_cabin(self, rc):
+        """All passengers booked in same cabin, no SSR violations, deadlines met."""
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-B", "cabin": "economy"},
+            "P5": {"flight_id": "FL-B", "cabin": "economy"},
+        }
+        score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        # G1 on same flight, G2 on same flight, SSR OK, deadlines OK
+        # Note: G1 is hard group — P2 (business) and P3 (economy) same flight diff cabin -> 0.7
+        # This won't be 1.0 because G1 has split cabin
+        assert score > 0.9
+
+    def test_zero_coverage(self, rc):
+        """No passengers booked -> low score (only SSR integrity is 1.0 since no violations possible)."""
+        bookings = {}
+        score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        # coverage=0, cabin_match=0, group=0, deadline=0, ssr=1.0 -> 0.20*1.0 = 0.20
+        assert score == pytest.approx(GRADER_W_SSR_INTEGRITY * 1.0)
+
+    def test_partial_coverage(self, rc):
+        """Some passengers booked, some not."""
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+        }
+        score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        assert EPS < score < 1.0 - EPS
+
+    def test_ssr_violation_penalizes(self, rc):
+        """Book P1 (UM) on FL-B which doesn't support UM -> SSR violation."""
+        bookings = {
+            "P1": {"flight_id": "FL-B", "cabin": "business"},  # UM not on FL-B
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score_bad = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+
+        bookings_good = dict(bookings)
+        bookings_good["P1"] = {"flight_id": "FL-A", "cabin": "business"}
+        score_good = rc.grader_score(bookings_good, PASSENGERS, FLIGHTS, GROUPS)
+
+        assert score_bad < score_good
+
+    def test_group_split_penalizes(self, rc):
+        """Hard group G1 split across flights -> score drops."""
+        bookings_split = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-B", "cabin": "economy"},  # G1 split!
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        bookings_together = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score_split = rc.grader_score(bookings_split, PASSENGERS, FLIGHTS, GROUPS)
+        score_together = rc.grader_score(bookings_together, PASSENGERS, FLIGHTS, GROUPS)
+        assert score_split < score_together
+
+    def test_deadline_missed_penalizes(self, rc):
+        """P1 has deadline 14:00. FL-B arrives 16:00 -> deadline missed."""
+        bookings_missed = {
+            "P1": {"flight_id": "FL-B", "cabin": "business"},  # arrives 16:00, deadline 14:00
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        bookings_met = dict(bookings_missed)
+        bookings_met["P1"] = {"flight_id": "FL-A", "cabin": "business"}
+        score_missed = rc.grader_score(bookings_missed, PASSENGERS, FLIGHTS, GROUPS)
+        score_met = rc.grader_score(bookings_met, PASSENGERS, FLIGHTS, GROUPS)
+        assert score_missed < score_met
+
+    def test_grader_is_deterministic(self, rc):
+        """Same input -> same output."""
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        s1 = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        s2 = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        assert s1 == s2
+
+    def test_grader_clamped_to_eps_range(self, rc):
+        """Score is always in (EPS, 1-EPS)."""
+        # Zero coverage
+        score_zero = rc.grader_score({}, PASSENGERS, FLIGHTS, GROUPS)
+        assert score_zero >= EPS
+
+        # Full coverage (best effort)
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score_full = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
+        assert score_full <= 1.0 - EPS
+
+
+# ===========================================================================
+# 4. TestPriorityWeights
+# ===========================================================================
+
+class TestPriorityWeights:
+    def test_tier1_highest(self):
+        assert priority_weight(1) == 1.5
+        for tier in [2, 3, 4, 5]:
+            assert priority_weight(1) > priority_weight(tier)
+
+    def test_tier5_lowest(self):
+        assert priority_weight(5) == 0.6
+        for tier in [1, 2, 3, 4]:
+            assert priority_weight(5) < priority_weight(tier)
+
+    def test_unknown_tier_defaults_to_1(self):
+        assert priority_weight(99) == 1.0
+        assert priority_weight(0) == 1.0
+
+
+# ===========================================================================
+# 5. TestCabinMatchScore
+# ===========================================================================
+
+class TestCabinMatchScore:
+    def test_all_matched(self):
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
         assert score == pytest.approx(1.0)
 
-    def test_all_wrong_returns_zero(self, rc):
-        # cabin_score = 0, P1 (paid_window) ends up in economy aisle → pref = 0
-        asgn = _assignments({"P1": "E2", "P2": "E1", "P3": "B2", "P4": "B1"})
-        score = rc.grader_score(asgn, PASSENGERS, AC2)
+    def test_none_matched(self):
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "economy"},   # business -> economy
+            "P2": {"flight_id": "FL-A", "cabin": "economy"},   # business -> economy
+            "P3": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
+            "P4": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
+            "P5": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
+        }
+        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
         assert score == pytest.approx(0.0)
 
-    def test_partial_is_between_zero_and_one(self, rc):
-        # 2 correctly placed (including paid-window pax), 2 unassigned
-        asgn = _assignments({"P1": "B1", "P2": "B2", "P3": None, "P4": None})
-        score = rc.grader_score(asgn, PASSENGERS, AC2)
-        assert 0.0 < score < 1.0
-
-    def test_no_pref_passengers_equals_cabin_score(self):
-        """When no passenger has paid_window, grader_score == cabin fraction."""
-        rc_nopref = RewardComputer(total_passengers=2, max_steps=10)
-        pax = pd.DataFrame([
-            {"passenger_id": "X1", "name": "A", "seat_ac1": "1A", "cabin": "economy", "paid_window": False},
-            {"passenger_id": "X2", "name": "B", "seat_ac1": "1B", "cabin": "economy", "paid_window": False},
-        ])
-        asgn = _assignments({"X1": "E1", "X2": "E2"})
-        score = rc_nopref.grader_score(asgn, pax, AC2)
-        # both economy → economy: cabin_score = 1.0, no pref → returns cabin_score
-        assert score == pytest.approx(1.0)
-
-    def test_unassigned_pref_passenger_penalises_score(self, rc):
-        """A paid-window pax left unassigned should lower score vs all assigned."""
-        asgn_full    = _assignments({"P1": "B1", "P2": "B2", "P3": "E1", "P4": "E2"})
-        asgn_partial = _assignments({"P1": None, "P2": "B2", "P3": "E1", "P4": "E2"})
-        score_full    = rc.grader_score(asgn_full,    PASSENGERS, AC2)
-        score_partial = rc.grader_score(asgn_partial, PASSENGERS, AC2)
-        assert score_partial < score_full
-
-
-# ===========================================================================
-# _constraint_score (internal helper, tested directly for clarity)
-# ===========================================================================
-
-class TestConstraintScore:
-    def setup_method(self):
-        self.rc = RewardComputer(total_passengers=20, max_steps=60)
-
-    def test_correct_cabin_window_pref_satisfied(self):
-        pax  = {"cabin": "business", "paid_window": True}
-        seat = {"cabin": "business", "seat_type": "window"}
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(2.0)
-
-    def test_correct_cabin_window_pref_missed(self):
-        pax  = {"cabin": "business", "paid_window": True}
-        seat = {"cabin": "business", "seat_type": "aisle"}
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.5)
-
-    def test_correct_cabin_no_pref(self):
-        pax  = {"cabin": "economy", "paid_window": False}
-        seat = {"cabin": "economy", "seat_type": "middle"}
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(1.0)
-
-    def test_wrong_cabin_no_pref(self):
-        pax  = {"cabin": "business", "paid_window": False}
-        seat = {"cabin": "economy", "seat_type": "aisle"}
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.0)
-
-    def test_wrong_cabin_pref_missed(self):
-        pax  = {"cabin": "business", "paid_window": True}
-        seat = {"cabin": "economy", "seat_type": "aisle"}
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(-0.5)
-
-
-# ===========================================================================
-# _constraint_score — legroom dimension
-# ===========================================================================
-
-class TestConstraintScoreLegroom:
-    def setup_method(self):
-        self.rc = RewardComputer(total_passengers=20, max_steps=60)
-
-    def test_paid_legroom_satisfied(self):
-        pax  = {"cabin": "business", "paid_window": False, "paid_legroom": True}
-        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": True}
-        # cabin +1.0, legroom +1.0
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(2.0)
-
-    def test_paid_legroom_missed(self):
-        pax  = {"cabin": "business", "paid_window": False, "paid_legroom": True}
-        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": False}
-        # cabin +1.0, legroom -0.5
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.5)
-
-    def test_both_prefs_satisfied(self):
-        pax  = {"cabin": "business", "paid_window": True, "paid_legroom": True}
-        seat = {"cabin": "business", "seat_type": "window", "extra_legroom": True}
-        # cabin +1.0, window +1.0, legroom +1.0
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(3.0)
-
-    def test_both_prefs_missed(self):
-        pax  = {"cabin": "business", "paid_window": True, "paid_legroom": True}
-        seat = {"cabin": "business", "seat_type": "aisle", "extra_legroom": False}
-        # cabin +1.0, window -0.5, legroom -0.5
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.0)
-
-    def test_no_legroom_field_in_seat_defaults_false(self):
-        """Easy/medium seats don't have extra_legroom — score as if False."""
-        pax  = {"cabin": "economy", "paid_window": False, "paid_legroom": True}
-        seat = {"cabin": "economy", "seat_type": "window"}  # no extra_legroom key
-        # cabin +1.0, legroom -0.5 (defaults to False)
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(0.5)
-
-    def test_no_paid_legroom_in_passenger_defaults_false(self):
-        """Easy/medium passengers don't have paid_legroom — treated as not paid."""
-        pax  = {"cabin": "economy", "paid_window": False}  # no paid_legroom key
-        seat = {"cabin": "economy", "seat_type": "window", "extra_legroom": True}
-        # cabin +1.0 only
-        assert self.rc._constraint_score(pax, seat) == pytest.approx(1.0)
-
-
-# ===========================================================================
-# Grader score — hard task (both preference dimensions)
-# ===========================================================================
-
-class TestGraderScoreHard:
-    """Test grader_score when both paid_window and paid_legroom are present."""
-
-    def setup_method(self):
-        self.rc = RewardComputer(total_passengers=4, max_steps=20)
-
-    def _ac2(self):
-        return {
-            "B_WL": {"cabin": "business", "seat_type": "window",  "extra_legroom": True},
-            "B_AL": {"cabin": "business", "seat_type": "aisle",   "extra_legroom": True},
-            "E_W":  {"cabin": "economy",  "seat_type": "window",  "extra_legroom": False},
-            "E_A":  {"cabin": "economy",  "seat_type": "aisle",   "extra_legroom": False},
+    def test_partial_match_priority_weighted(self):
+        """Only P1 (tier 1, weight 1.5) matched. Others mismatched."""
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},  # match
+            "P2": {"flight_id": "FL-A", "cabin": "economy"},   # mismatch
+            "P3": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
+            "P4": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
+            "P5": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
         }
+        total_weight = sum(priority_weight(p["priority_tier"]) for p in PASSENGERS.values())
+        expected = priority_weight(1) / total_weight
+        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
+        assert score == pytest.approx(expected)
 
-    def _passengers(self):
-        return pd.DataFrame([
-            {"passenger_id": "H1", "name": "A", "seat_ac1": "1A", "cabin": "business",
-             "paid_window": True,  "paid_legroom": True},
-            {"passenger_id": "H2", "name": "B", "seat_ac1": "1B", "cabin": "business",
-             "paid_window": False, "paid_legroom": True},
-            {"passenger_id": "H3", "name": "C", "seat_ac1": "2A", "cabin": "economy",
-             "paid_window": True,  "paid_legroom": False},
-            {"passenger_id": "H4", "name": "D", "seat_ac1": "2B", "cabin": "economy",
-             "paid_window": False, "paid_legroom": False},
-        ])
 
-    def test_perfect_score(self):
-        pax = self._passengers()
-        asgn = _assignments({"H1": "B_WL", "H2": "B_AL", "H3": "E_W", "H4": "E_A"})
-        score = self.rc.grader_score(asgn, pax, self._ac2())
-        assert score == pytest.approx(1.0)
+# ===========================================================================
+# 6. TestGroupIntegrityScore
+# ===========================================================================
 
-    def test_window_missed_lowers_pref_score(self):
-        """H3 (paid_window) gets aisle seat → window_pref_score = 1/2."""
-        pax = self._passengers()
-        asgn = _assignments({"H1": "B_WL", "H2": "B_AL", "H3": "E_A", "H4": "E_W"})
-        score = self.rc.grader_score(asgn, pax, self._ac2())
-        # cabin: 4/4=1.0, window: H1→win✓ H3→aisle✗ = 1/2=0.5
-        # legroom: H1→leg✓ H2→leg✓ = 2/2=1.0 → pref=(0.5+1.0)/2=0.75
-        assert score == pytest.approx((1.0 + 0.75) / 2.0)
-
-    def test_legroom_missed_lowers_pref_score(self):
-        """H1+H2 (paid_legroom) get no-legroom seats → legroom_score=0."""
-        pax = self._passengers()
-        asgn = _assignments({"H1": "E_W", "H2": "E_A", "H3": "B_WL", "H4": "B_AL"})
-        score = self.rc.grader_score(asgn, pax, self._ac2())
-        # cabin: 0/4=0.0
-        # window: H1→E_W(win)✓ H3→B_WL(win)✓ = 2/2=1.0
-        # legroom: H1→E_W(no leg)✗ H2→E_A(no leg)✗ = 0/2=0.0 → pref=0.5
-        assert score == pytest.approx((0.0 + 0.5) / 2.0)
-
-    def test_no_prefs_equals_cabin_score(self):
-        """DataFrame with no paid preferences → grader_score == cabin_score."""
-        pax = pd.DataFrame([
-            {"passenger_id": "N1", "name": "A", "seat_ac1": "1A",
-             "cabin": "business", "paid_window": False, "paid_legroom": False},
-            {"passenger_id": "N2", "name": "B", "seat_ac1": "1B",
-             "cabin": "economy", "paid_window": False, "paid_legroom": False},
-        ])
-        rc = RewardComputer(total_passengers=2, max_steps=10)
-        ac2 = {
-            "B1": {"cabin": "business", "seat_type": "aisle", "extra_legroom": True},
-            "E1": {"cabin": "economy",  "seat_type": "aisle", "extra_legroom": True},
+class TestGroupIntegrityScore:
+    def test_all_same_flight_same_cabin(self):
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "business"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
         }
-        asgn = _assignments({"N1": "B1", "N2": "E1"})
-        score = rc.grader_score(asgn, pax, ac2)
+        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
+        # G1: same flight same cabin (both business) -> 1.0
+        # But wait, P3 original_cabin is economy, booked as business — doesn't matter for group integrity
+        # G2: same flight same cabin -> 1.0
+        assert score == pytest.approx(GROUP_SAME_FLIGHT_SAME_CABIN)
+        assert violations == 0
+
+    def test_same_flight_diff_cabin(self):
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},   # diff cabin
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
+        # G1: same flight diff cabin -> 0.7
+        # G2: same flight same cabin -> 1.0
+        expected = (GROUP_SAME_FLIGHT_DIFF_CABIN + GROUP_SAME_FLIGHT_SAME_CABIN) / 2
+        assert score == pytest.approx(expected)
+        assert violations == 0
+
+    def test_hard_group_split_flights(self):
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-B", "cabin": "economy"},   # G1 split across flights!
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
+        # G1 (hard): split flights -> 0.0 + 1 violation
+        # G2 (soft): same flight same cabin -> 1.0
+        expected = (GROUP_SPLIT_FLIGHTS_HARD + GROUP_SAME_FLIGHT_SAME_CABIN) / 2
+        assert score == pytest.approx(expected)
+        assert violations == 1
+
+    def test_soft_group_split_flights(self):
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+            "P4": {"flight_id": "FL-A", "cabin": "economy"},
+            "P5": {"flight_id": "FL-B", "cabin": "economy"},   # G2 split across flights
+        }
+        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
+        # G1 (hard): same flight diff cabin -> 0.7
+        # G2 (soft): split flights -> 0.4 (no hard violation)
+        expected = (GROUP_SAME_FLIGHT_DIFF_CABIN + GROUP_SPLIT_FLIGHTS_SOFT) / 2
+        assert score == pytest.approx(expected)
+        assert violations == 0  # soft group split is not a hard violation
+
+    def test_no_groups(self):
+        bookings = {"P1": {"flight_id": "FL-A", "cabin": "business"}}
+        pax = {"P1": PASSENGERS["P1"]}
+        score, violations = RewardComputer._group_integrity_score(bookings, pax, {})
         assert score == pytest.approx(1.0)
+        assert violations == 0
+
+
+# ===========================================================================
+# 7. TestDeadlineScore
+# ===========================================================================
+
+class TestDeadlineScore:
+    def test_all_deadlines_met(self):
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},  # dl 14:00, arr 12:00 OK
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # dl 16:00, arr 12:00 OK
+        }
+        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
+        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
+        assert score == pytest.approx(1.0)
+
+    def test_deadline_missed(self):
+        bookings = {
+            "P1": {"flight_id": "FL-B", "cabin": "business"},  # dl 14:00, arr 16:00 MISS
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # dl 16:00, arr 12:00 OK
+        }
+        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
+        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
+        # P1 missed, P5 met. Priority-weighted.
+        total_w = priority_weight(1) + priority_weight(5)
+        met_w = priority_weight(5)
+        assert score == pytest.approx(met_w / total_w)
+
+    def test_no_deadline_passengers(self):
+        pax = {"P2": PASSENGERS["P2"], "P3": PASSENGERS["P3"]}  # no deadlines
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
+        assert score == pytest.approx(1.0)
+
+
+# ===========================================================================
+# 8. TestSSRIntegrity
+# ===========================================================================
+
+class TestSSRIntegrity:
+    def test_no_violations(self):
+        bookings = {
+            "P1": {"flight_id": "FL-A", "cabin": "business"},  # UM -> FL-A supports UM
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # WCHR -> FL-A supports WCHR
+        }
+        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
+        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
+        assert score == pytest.approx(1.0)
+        assert violations == 0
+
+    def test_one_violation(self):
+        bookings = {
+            "P1": {"flight_id": "FL-B", "cabin": "business"},  # UM -> FL-B doesn't support UM!
+            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
+        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
+        assert violations == 1
+        assert score == pytest.approx(0.75)  # 1.0 - 0.25*1
+
+    def test_no_ssr_passengers(self):
+        pax = {"P2": PASSENGERS["P2"], "P3": PASSENGERS["P3"]}
+        bookings = {
+            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P3": {"flight_id": "FL-A", "cabin": "economy"},
+        }
+        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
+        assert score == pytest.approx(1.0)
+        assert violations == 0
+
+
+# ===========================================================================
+# 9. TestGraderWeightsSum
+# ===========================================================================
+
+def test_grader_weights_sum_to_one():
+    total = (GRADER_W_COVERAGE + GRADER_W_CABIN_MATCH +
+             GRADER_W_GROUP_INTEGRITY + GRADER_W_DEADLINE + GRADER_W_SSR_INTEGRITY)
+    assert total == pytest.approx(1.0)

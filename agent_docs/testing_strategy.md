@@ -33,11 +33,11 @@ def call_tool(env, tool_name, **args):
 
 #### 2. TestListPassengers
 - `test_returns_all_passengers` — count matches data
-- `test_returns_summary_not_full_details` — has passenger_id, priority_tier, group_id; does NOT have original_cabin or ssr_flags details
+- `test_returns_summary_not_full_details` — has passenger_id, priority_tier, group_id, has_preference; does NOT have original_cabin or ssr_flags details
 - `test_reward_is_small_positive_first_call` — +0.02 first time
 
 #### 3. TestGetPassengerDetails
-- `test_returns_full_record` — all fields present
+- `test_returns_full_record` — all fields present including paid_window, paid_legroom
 - `test_nonexistent_passenger_errors` — status=error
 - `test_already_booked_passenger_penalty` — small negative reward
 
@@ -45,6 +45,8 @@ def call_tool(env, tool_name, **args):
 - `test_returns_all_flights` — count matches data
 - `test_availability_decrements_after_booking` — book a passenger, re-call, count reduced
 - `test_includes_ssr_support` — supports_ssr field present
+- `test_includes_seat_features` — seat_features field present with window/legroom counts per cabin
+- `test_seat_features_decrement_after_preference_booking` — book passenger with paid_window, re-call, window count reduced
 
 #### 5. TestGetFlightDetails
 - `test_returns_full_flight` — all fields present
@@ -63,6 +65,9 @@ def call_tool(env, tool_name, **args):
 - `test_nonexistent_passenger_errors`
 - `test_nonexistent_flight_errors`
 - `test_invalid_cabin_errors`
+- `test_preference_satisfied_when_available` — passenger with paid_window booked on cabin with window > 0 → preferences_satisfied includes "window"
+- `test_preference_not_satisfied_when_unavailable` — passenger with paid_window booked on cabin with window = 0 → preferences_satisfied does not include "window"
+- `test_preference_bonus_reward` — booking passenger with satisfied preference gives bonus step reward
 
 #### 7. TestBookGroup
 - `test_successful_group_booking` — all members booked atomically
@@ -72,6 +77,7 @@ def call_tool(env, tool_name, **args):
 - `test_ssr_check_all_members` — if ANY member has unsupported SSR → all fail
 - `test_nonexistent_group_errors`
 - `test_partially_booked_group_errors` — if some members already booked → error
+- `test_group_booking_preference_satisfaction` — group members with paid preferences get them satisfied when available
 
 #### 8. TestFinalizePlan
 - `test_triggers_done` — done=True after finalize
@@ -123,6 +129,7 @@ def call_tool(env, tool_name, **args):
 - `test_split_cabin_fallback_reward`
 - `test_priority_weight_scaling` — Tier 1 gets higher reward than Tier 5 for same outcome
 - `test_deadline_met_bonus`
+- `test_preference_satisfaction_bonus` — each satisfied preference adds +0.03 × priority_weight
 - `test_hard_constraint_violation_heavy_penalty`
 - `test_failed_booking_small_penalty`
 
@@ -133,6 +140,7 @@ def call_tool(env, tool_name, **args):
 - `test_ssr_violation_penalizes` — drops score significantly
 - `test_group_split_penalizes` — hard group split → score drops
 - `test_deadline_missed_penalizes`
+- `test_preference_missed_penalizes` — unsatisfied paid preferences lower score
 - `test_grader_is_deterministic` — same input → same output
 - `test_grader_clamped_to_eps_range`
 
@@ -152,6 +160,13 @@ def call_tool(env, tool_name, **args):
 - `test_hard_group_split_flights` — 0.0
 - `test_soft_group_split_flights` — 0.4
 - `test_no_groups` — 1.0 (no groups to violate)
+
+#### 7. TestPreferenceScore
+- `test_all_preferences_satisfied` — 1.0
+- `test_no_preferences_satisfied` — 0.0
+- `test_partial_preferences_priority_weighted` — higher tier preferences weigh more
+- `test_no_passengers_have_preferences` — 1.0 (nothing to violate)
+- `test_mixed_window_legroom` — passenger with both preferences, only one satisfied → 0.5 weighted
 
 ---
 

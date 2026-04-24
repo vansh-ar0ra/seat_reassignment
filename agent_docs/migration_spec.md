@@ -15,6 +15,7 @@ The agent must produce a rebooking plan that:
 - Keeps groups whole
 - Accommodates special service needs
 - Protects downstream connections
+- Satisfies paid seat preferences (window seat, extra legroom) where available
 - Makes sound ancillary service decisions (hotels, meals, lounge, transport)
 
 ---
@@ -33,7 +34,9 @@ The agent must produce a rebooking plan that:
     "group_integrity": "hard" | "soft" | null,  # only set if group_id present
     "group_size": 3 | null,
     "ssr_flags": ["UM"] | [],      # subset of: UM, WCHR, pet_cabin, pet_cargo
-    "downstream_deadline": "14:30" | null  # HH:MM, nullable
+    "downstream_deadline": "14:30" | null,  # HH:MM, nullable
+    "paid_window": true | false,   # paid for window seat preference
+    "paid_legroom": true | false   # paid for extra legroom seat preference
 }
 ```
 
@@ -48,6 +51,11 @@ The agent must produce a rebooking plan that:
         "economy": 45,
         "premium_economy": 12,
         "business": 4
+    },
+    "seat_features": {
+        "economy": {"window": 12, "legroom": 6},
+        "premium_economy": {"window": 4, "legroom": 3},
+        "business": {"window": 2, "legroom": 4}
     },
     "supports_ssr": ["WCHR", "pet_cargo"]  # which SSRs this flight can accommodate
 }
@@ -72,30 +80,30 @@ The agent must produce a rebooking plan that:
 
 #### `list_passengers()`
 - **Args**: none
-- **Returns**: Summary list of all passengers: passenger_id, priority_tier, group_id, constraint hints (has_ssr, has_deadline)
+- **Returns**: Summary list of all passengers: passenger_id, priority_tier, group_id, constraint hints (has_ssr, has_deadline, has_preference)
 - **Use**: Called once early to plan ordering. Lightweight.
 
 #### `get_passenger_details(passenger_id)`
 - **Args**: `passenger_id: str`
-- **Returns**: Full record — original_cabin, exact SSR flags, group membership + integrity_type, downstream_deadline, priority_tier
+- **Returns**: Full record — original_cabin, exact SSR flags, group membership + integrity_type, downstream_deadline, priority_tier, paid_window, paid_legroom
 - **Use**: Called per-passenger when ready to work on them
 
 #### `list_alternative_flights()`
 - **Args**: none
-- **Returns**: Full pool of alternative flights with per-cabin seat counts, departure/arrival times, SSR support
-- **Behavior**: Seat counts update as agent books — repeat calls are valid
+- **Returns**: Full pool of alternative flights with per-cabin seat counts, seat_features (window/legroom counts per cabin), departure/arrival times, SSR support
+- **Behavior**: Seat counts and seat_features update as agent books — repeat calls are valid
 - **Use**: Survey capacity, called after bookings to refresh availability
 
 #### `get_flight_details(flight_id)`
 - **Args**: `flight_id: str`
-- **Returns**: Everything about a specific flight including current per-cabin availability
+- **Returns**: Everything about a specific flight including current per-cabin availability and seat_features (window/legroom counts)
 - **Use**: Precise check before committing
 
 ### 3.2 Commitment Tools
 
 #### `book_passenger(passenger_id, flight_id, cabin)`
 - **Args**: `passenger_id: str`, `flight_id: str`, `cabin: str` (economy|premium_economy|business)
-- **Returns**: success/failure with reason. On success, decrements flight's cabin count.
+- **Returns**: success/failure with reason. On success, decrements flight's cabin count. If passenger has paid_window or paid_legroom and the booked cabin on that flight has those features available, they are auto-consumed (decremented) and reported as `preferences_satisfied` in the result. Preferences are soft — booking succeeds even if unavailable.
 - **Validation**:
   - Passenger must exist and not already booked
   - Flight must exist
@@ -107,7 +115,7 @@ The agent must produce a rebooking plan that:
 
 #### `book_group(group_id, flight_id, cabin_assignments)`
 - **Args**: `group_id: str`, `flight_id: str`, `cabin_assignments: dict[str, str]` mapping passenger_id → cabin
-- **Returns**: success/failure. Atomic — all or none booked.
+- **Returns**: success/failure. Atomic — all or none booked. For each booked member, preferences (paid_window, paid_legroom) are auto-consumed if available on the flight/cabin and reported in the result.
 - **Validation**:
   - All passengers in group must exist and not be booked
   - Flight must have capacity for all members in their assigned cabins
@@ -149,8 +157,10 @@ The agent must produce a rebooking plan that:
 | Successful booking, split across cabins same flight (fallback) | +0.05 × priority_weight |
 | Successful booking, cabin downgrade | +0.02 × priority_weight |
 | Successful booking + downstream deadline met | additional +0.05 × priority_weight |
+| Successful booking + preference satisfied (window or legroom) | additional +0.03 × priority_weight per preference |
 | Successful booking, deadline missed but no alternative existed | neutral (0.0) |
 | Failed booking (rejected by environment) | -0.02 |
+| Invalid tool call | -0.02 |
 
 **Priority weights:**
 - Tier 1 → 1.5
@@ -165,20 +175,22 @@ The agent must produce a rebooking plan that:
 
 | Component | Weight | Description |
 |-----------|--------|-------------|
-| coverage_score | 0.35 | Fraction of passengers successfully booked (1.0 = all placed) |
+| coverage_score | 0.30 | Fraction of passengers successfully booked (1.0 = all placed) |
 | cabin_match_score | 0.15 | Fraction placed in original cabin (priority-weighted) |
 | group_integrity_score | 0.15 | Per-group: 1.0 same-flight-same-cabin, 0.7 same-flight-diff-cabin, 0.0 split-flights (hard), 0.4 split-flights (soft). Averaged. |
-| deadline_score | 0.15 | Fraction of deadline-bearing passengers whose deadlines met (priority-weighted) |
+| deadline_score | 0.10 | Fraction of deadline-bearing passengers whose deadlines met (priority-weighted) |
 | ssr_integrity_score | 0.20 | 1.0 if no SSR violations, penalized sharply per violation |
+| preference_score | 0.10 | Fraction of paid preferences (window, legroom) satisfied (priority-weighted). Each passenger can have 0, 1, or 2 preferences. Score = weighted satisfied / weighted total. If no passengers have preferences, score = 1.0. |
 
 **Grader formula:**
 ```
 grader_score = (
-    0.35 × coverage_score
+    0.30 × coverage_score
   + 0.15 × cabin_match_score
   + 0.15 × group_integrity_score
-  + 0.15 × deadline_score
+  + 0.10 × deadline_score
   + 0.20 × ssr_integrity_score
+  + 0.10 × preference_score
 )
 grader_score = max(EPS, min(1 - EPS, grader_score))
 ```
@@ -203,6 +215,7 @@ The system prompt is **constant across all three tiers**. It communicates:
    - Match original cabin where possible
    - Higher-tier passengers get better outcomes on trade-offs
    - Keep soft groups together where possible
+   - Satisfy paid preferences (window, legroom) where available — choose flights/cabins with seat feature availability
    - Split across cabins on same flight before splitting across flights
 5. **Recommended workflow**: survey → order by constraint scarcity → evaluate → commit → iterate
 
@@ -260,7 +273,9 @@ Each tier directory (`data/{easy,medium,hard}/`) contains:
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         }
     ]
 }
@@ -278,6 +293,11 @@ Each tier directory (`data/{easy,medium,hard}/`) contains:
                 "economy": 45,
                 "premium_economy": 12,
                 "business": 4
+            },
+            "seat_features": {
+                "economy": {"window": 12, "legroom": 6},
+                "premium_economy": {"window": 4, "legroom": 3},
+                "business": {"window": 2, "legroom": 4}
             },
             "supports_ssr": ["WCHR", "pet_cargo"]
         }

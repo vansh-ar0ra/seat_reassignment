@@ -9,7 +9,9 @@
             "group_integrity": "hard",
             "group_size": 2,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": true,
+            "paid_legroom": true
         },
         {
             "passenger_id": "PAX-H002",
@@ -20,7 +22,9 @@
             "group_integrity": "hard",
             "group_size": 2,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": true,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H003",
@@ -31,7 +35,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": ["UM"],
-            "downstream_deadline": "15:00"
+            "downstream_deadline": "15:00",
+            "paid_window": false,
+            "paid_legroom": true
         },
         {
             "passenger_id": "PAX-H004",
@@ -42,7 +48,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": true,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H005",
@@ -53,7 +61,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H006",
@@ -64,7 +74,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H007",
@@ -75,7 +87,9 @@
             "group_integrity": "soft",
             "group_size": 2,
             "ssr_flags": ["WCHR"],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": true
         },
         {
             "passenger_id": "PAX-H008",
@@ -86,7 +100,9 @@
             "group_integrity": "soft",
             "group_size": 2,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H009",
@@ -97,7 +113,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": "14:00"
+            "downstream_deadline": "14:00",
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H010",
@@ -108,7 +126,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": ["pet_cabin"],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H011",
@@ -119,7 +139,9 @@
             "group_integrity": "hard",
             "group_size": 3,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H012",
@@ -130,7 +152,9 @@
             "group_integrity": "hard",
             "group_size": 3,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": true,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H013",
@@ -141,7 +165,9 @@
             "group_integrity": "hard",
             "group_size": 3,
             "ssr_flags": ["WCHR"],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H014",
@@ -152,7 +178,9 @@
             "group_integrity": "soft",
             "group_size": 3,
             "ssr_flags": [],
-            "downstream_deadline": "13:00"
+            "downstream_deadline": "13:00",
+            "paid_window": false,
+            "paid_legroom": true
         },
         {
             "passenger_id": "PAX-H015",
@@ -163,7 +191,9 @@
             "group_integrity": "soft",
             "group_size": 3,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H016",
@@ -174,7 +204,9 @@
             "group_integrity": "soft",
             "group_size": 3,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H017",
@@ -185,7 +217,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": ["pet_cargo"],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H018",
@@ -196,7 +230,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": "16:00"
+            "downstream_deadline": "16:00",
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H019",
@@ -207,7 +243,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": true,
+            "paid_legroom": true
         },
         {
             "passenger_id": "PAX-H020",
@@ -218,7 +256,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H021",
@@ -229,7 +269,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": ["UM"],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H022",
@@ -240,7 +282,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H023",
@@ -251,7 +295,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": "15:00"
+            "downstream_deadline": "15:00",
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H024",
@@ -262,7 +308,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         },
         {
             "passenger_id": "PAX-H025",
@@ -273,7 +321,9 @@
             "group_integrity": null,
             "group_size": null,
             "ssr_flags": [],
-            "downstream_deadline": null
+            "downstream_deadline": null,
+            "paid_window": false,
+            "paid_legroom": false
         }
     ]
 }
