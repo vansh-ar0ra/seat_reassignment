@@ -1,4 +1,7 @@
 .venv
+.agents
+.claude
+agent_docs
 .git
 __pycache__
 **/__pycache__

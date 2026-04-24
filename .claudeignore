@@ -1,0 +1,41 @@
+# Dependencies and virtual environments
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+
+# Lock files (read-only reference, don't modify)
+uv.lock
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+
+# Old data files (will be deleted during migration)
+data/*/seats_ac1.csv
+data/*/seats_ac2.csv
+data/*/ac1_config.json
+data/*/ac2_config.json
+data/*/assignments.csv
+
+# Scripts not part of core migration
+validate-submission.sh
+data/*/generate_data.py
+
+# Inference variants
+inference_gemini*.py
+inference_random.py
+
+# Debug logs
+debug_logs/
