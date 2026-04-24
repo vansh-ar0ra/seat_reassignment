@@ -1,6 +1,7 @@
 ---
   Phase 1: Data Files
 
+
   1.1 data/easy/config.json
 
   {"task_id": "easy", "max_steps": 30, "cancelled_flight": "FL-100", "destination": "DEL"}
