@@ -26,7 +26,9 @@ fi
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 
 # ── Disable FlashInfer JIT (needs nvcc, not in runtime image) ─
+# Force TRITON_ATTN backend — FlashInfer needs JIT/nvcc, FLASH_ATTN needs compute >= 8.0
 export UNSLOTH_VLLM_NO_FLASHINFER=1
+export VLLM_ATTENTION_BACKEND=TRITON_ATTN
 
 # ── Start trackio dashboard on port 7860 (default) ──────────
 # trackio.show() defaults to port 7860 — avoid passing kwargs
