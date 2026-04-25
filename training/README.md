@@ -289,3 +289,54 @@ The agent has 5 steps max, so there's 1 spare step (but no revisions are allowed
 - Valid cabins: `economy`, `premium_economy`, `business`.
 - SSR types: `UM` (unaccompanied minor), `WCHR` (wheelchair), `pet_cabin`, `pet_cargo`.
 - Group integrity values: `hard` (must stay together or severe penalty), `soft` (prefer together).
+
+---
+
+## 8. Running on the HF Space
+
+The `space/` directory contains a Docker-based HF Space scaffold that runs training jobs on a T4 medium GPU ($0.90/hr).
+
+### JOB Dispatch
+
+Set the `JOB` environment variable in Space Settings → Variables to select a job:
+
+| JOB value | Script | What it does | Hub target |
+|-----------|--------|--------------|------------|
+| `idle` | — | Keeps container alive with trackio dashboard | — |
+| `sft` | `training/sft.py` | SFT on gold trajectories (3 epochs) | `Vanshar0ra/irrops-sft-adapter` |
+| `grpo-smoke` | `training/train.py --smoke` | 2 easy scenarios, 2 steps — sanity check | (no push) |
+| `grpo-p1` | `training/train.py --phase 1` | 50 easy, 200 steps | `Vanshar0ra/irrops-grpo-phase1` |
+| `grpo-p2` | `training/train.py --phase 2` | 50 easy + 100 med + 100 hard, 400 steps | `Vanshar0ra/irrops-grpo-phase2` |
+| `eval` | `training/eval.py --sft --phase1 --phase2` | Evaluate all checkpoints across tiers | — (logs to trackio) |
+
+### Hub Repos
+
+| Repo | Contents |
+|------|----------|
+| `Vanshar0ra/irrops-gold-trajectories` | Gold JSONL trajectories (SFT input) |
+| `Vanshar0ra/irrops-sft-adapter` | SFT LoRA adapter |
+| `Vanshar0ra/irrops-grpo-phase1` | GRPO Phase 1 adapter |
+| `Vanshar0ra/irrops-grpo-phase2` | GRPO Phase 2 adapter (final) |
+
+### Expected Runtime & Cost (T4 medium @ $0.90/hr)
+
+| Job | Runtime | Cost |
+|-----|---------|------|
+| `sft` | ~30 min | ~$0.45 |
+| `grpo-smoke` | ~10 min | ~$0.15 |
+| `grpo-p1` | ~2-3 hrs | ~$2-3 |
+| `grpo-p2` | ~4-6 hrs | ~$4-5 |
+| `eval` | ~30-60 min | ~$0.50-1 |
+
+### Monitoring
+
+- **Trackio dashboard**: Visit the Space URL — live loss/reward/score plots
+- **Logs tab**: Click "Logs" on the Space page for stdout/stderr
+- All jobs auto-resume from Hub checkpoints if the container restarts
+
+### Panic Button
+
+If a job is stuck or consuming budget:
+
+1. **Quick**: Go to Space Settings → set `JOB=idle` → click "Restart"
+2. **Full stop**: Click "Pause" on the Space UI — billing stops immediately

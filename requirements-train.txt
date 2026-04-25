@@ -7,3 +7,6 @@ datasets
 accelerate
 trackio
 openenv-core
+google-genai
+huggingface_hub
+hf_transfer
