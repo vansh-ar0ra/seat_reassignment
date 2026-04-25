@@ -19,7 +19,7 @@ ARG PROJECT_REF=single-step
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl && \
+        git curl gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
 # Cache-bust: Docker invalidates this layer when the branch HEAD changes
