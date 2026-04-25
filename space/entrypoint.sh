@@ -25,6 +25,9 @@ fi
 # ── Enable hf_transfer for fast uploads ─────────────────────
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 
+# ── Disable FlashInfer JIT (needs nvcc, not in runtime image) ─
+export UNSLOTH_VLLM_NO_FLASHINFER=1
+
 # ── Start trackio dashboard on port 7860 (default) ──────────
 # trackio.show() defaults to port 7860 — avoid passing kwargs
 # that may not exist in all trackio versions
