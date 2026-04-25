@@ -9,6 +9,9 @@ echo "════════════════════════�
 echo "  JOB          = ${JOB:-idle}"
 echo "  PROJECT_REF  = ${PROJECT_REF:-unknown}"
 echo "  GPU          = $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none')"
+python -c "import trl; print(f'  trl            = {trl.__version__}')" 2>/dev/null || true
+python -c "import vllm; print(f'  vllm           = {vllm.__version__}')" 2>/dev/null || true
+python -c "from vllm.sampling_params import GuidedDecodingParams; print('  GuidedDecoding = OK')" 2>/dev/null || echo "  GuidedDecoding = MISSING"
 echo "══════════════════════════════════════════════════════════"
 
 # ── HF token login ──────────────────────────────────────────

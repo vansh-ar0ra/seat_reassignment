@@ -29,8 +29,18 @@ RUN git clone ${PROJECT_REPO} /app && \
 WORKDIR /app
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements-train.txt && \
+# 1. Install unsloth first (it brings its own vllm fork)
+# 2. Then install trl + standard vllm on top to ensure GuidedDecodingParams exists
+# 3. Then extras
+RUN pip install --no-cache-dir unsloth && \
+    pip install --no-cache-dir -r requirements-train.txt && \
+    pip install --no-cache-dir --force-reinstall "vllm>=0.6.0" && \
     pip install --no-cache-dir trackio huggingface_hub hf_transfer
+
+# Log installed versions for debugging
+RUN python -c "import trl; print('trl', trl.__version__)" && \
+    python -c "import vllm; print('vllm', vllm.__version__)" && \
+    python -c "from vllm.sampling_params import GuidedDecodingParams; print('GuidedDecodingParams OK')"
 
 # Trackio dashboard port
 EXPOSE 7860
