@@ -665,12 +665,14 @@ def rollout_func(
     for prompt_idx, prompt in enumerate(prompts):
         # Derive task_id and seed deterministically from the prompt index
         task_id = TASK_IDS[prompt_idx % len(TASK_IDS)]
+        base_seed = prompt_idx * 1000
         # If the prompt is a dataset dict/row with task_id/seed, use those
         if isinstance(prompt, dict):
             task_id = prompt.get("task_id", task_id)
+            base_seed = prompt.get("seed", base_seed)
 
         for gen_idx in range(num_generations):
-            seed = prompt_idx * 1000 + gen_idx
+            seed = base_seed + gen_idx
 
             episode = _play_episode(
                 trainer=trainer,

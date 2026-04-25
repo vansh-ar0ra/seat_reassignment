@@ -97,11 +97,11 @@ class FlightRebookingEnvironment(Environment):
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    def __init__(self, debug: bool = True, runs_dir: Optional[str] = None):
+    def __init__(self, debug: bool = True, runs_dir: Optional[str] = None, data_dir: Optional[str] = None):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._episode: Optional[EpisodeState] = None
         self._reward_computer: Optional[RewardComputer] = None
-        self._data_dir = Path(__file__).resolve().parent.parent / "data"
+        self._data_dir = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent / "data"
         self._debugger = RunDebugger(runs_dir=runs_dir, enabled=debug)
 
     # ------------------------------------------------------------------

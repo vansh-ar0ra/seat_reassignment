@@ -40,6 +40,7 @@ def build_dataset(
                 "prompt": _PROMPT,
                 "seed": base_seed + idx,
                 "tier": tier,
+                "task_id": f"{tier}_{i:03d}",
             })
             idx += 1
     return Dataset.from_list(rows)

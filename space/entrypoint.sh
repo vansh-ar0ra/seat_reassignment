@@ -16,7 +16,7 @@ echo "════════════════════════�
 
 # ── HF token login ──────────────────────────────────────────
 if [ -n "${HF_TOKEN:-}" ]; then
-    huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
+    python -c "from huggingface_hub import login; login(token='$HF_TOKEN')"
     echo "Logged in to Hugging Face Hub."
 else
     echo "WARNING: HF_TOKEN not set — push-to-hub will fail."
@@ -26,7 +26,7 @@ fi
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 
 # ── Start trackio dashboard on port 7860 ────────────────────
-trackio --port 7860 &
+python -c "import trackio; trackio.show(server_port=7860, open_browser=False, block_thread=True)" &
 TRACKIO_PID=$!
 echo "Trackio dashboard started (PID=$TRACKIO_PID) on :7860"
 

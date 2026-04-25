@@ -20,7 +20,10 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+# A policy callable takes message history and returns the raw assistant response string.
+PolicyCallable = Callable[[List[Dict[str, str]]], str]
 
 # ---------------------------------------------------------------------------
 # Make repo root importable (works whether invoked from repo root or training/)
@@ -28,9 +31,6 @@ from typing import Any, Dict, List, Optional
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from models import FlightRebookingAction
 from server.environment import FlightRebookingEnvironment
@@ -419,6 +419,8 @@ def generate_response(
     device: str,
 ) -> str:
     """Run a single forward pass through the model and decode new tokens."""
+    import torch
+
     prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
@@ -445,18 +447,28 @@ def generate_response(
 
 
 def run_episode(
-    model: Any,
-    tokenizer: Any,
-    task_id: str,
-    seed: int,
-    device: str,
+    env: Any,
+    obs: Any,
+    policy_callable: PolicyCallable,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> Dict[str, Any]:
-    """Run a single episode and return a result dict."""
+    """Run a single episode and return a result dict.
 
-    env = FlightRebookingEnvironment(debug=False)
-    obs = env.reset(seed=seed, task_id=task_id)
+    Args:
+        env: A FlightRebookingEnvironment that has already been reset.
+        obs: The initial observation returned by env.reset().
+        policy_callable: A callable that takes message history (list of dicts)
+                         and returns the raw assistant response string.
+        system_prompt: The system prompt to use for the conversation.
 
-    messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    Returns:
+        Dict with keys: task_id, seed, grader_score, breakdown,
+        cumulative_reward, turns_used, parse_failures, parse_clean,
+        rewards, turn_logs, raw_outputs, messages.
+    """
+    task_id = env._episode.task_id if env._episode else "unknown"
+
+    messages: List[dict] = [{"role": "system", "content": system_prompt}]
     history: List[dict] = []
     rewards: List[float] = []
     turn_logs: List[dict] = []
@@ -466,7 +478,7 @@ def run_episode(
 
     sep = "=" * 60
     print(f"\n{sep}")
-    print(f"Episode: task={task_id}  seed={seed}")
+    print(f"Episode: task={task_id}")
     print(
         f"Passengers: {obs.passengers_total}  |  "
         f"Max env steps: {obs.max_steps}  |  Hard cap: {MAX_TURNS} turns"
@@ -502,7 +514,7 @@ def run_episode(
         print(f"\n--- Turn {turn}/{MAX_TURNS} ---")
         t0 = time.time()
         try:
-            raw_response = generate_response(model, tokenizer, messages, device)
+            raw_response = policy_callable(messages)
         except Exception as exc:
             raw_response = ""
             print(f"  [GEN ERROR] {exc}")
@@ -626,7 +638,6 @@ def run_episode(
 
     result = {
         "task_id": task_id,
-        "seed": seed,
         "grader_score": round(grader_score, 6),
         "breakdown": {
             k: round(v, 6) if isinstance(v, float) else v
@@ -635,14 +646,16 @@ def run_episode(
         "cumulative_reward": round(obs.cumulative_reward, 6),
         "turns_used": len(turn_logs),
         "parse_failures": parse_failures,
+        "parse_clean": parse_failures == 0,
         "rewards": [round(r, 6) for r in rewards],
         "turn_logs": turn_logs,
         "raw_outputs": raw_outputs,
+        "messages": messages,
     }
 
     # ---- print summary ----
     print(f"\n{sep}")
-    print(f"EPISODE RESULT  task={task_id}  seed={seed}")
+    print(f"EPISODE RESULT  task={task_id}")
     print(f"  Grader score    : {grader_score:.4f}")
     print(f"  Cumulative rew  : {obs.cumulative_reward:.4f}")
     print(f"  Turns used      : {len(turn_logs)}/{MAX_TURNS}")
@@ -666,6 +679,9 @@ def run_episode(
 
 
 def main() -> None:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     parser = argparse.ArgumentParser(
         description="Smoke test: single rollout with base model (no TRL)"
     )
@@ -730,12 +746,19 @@ def main() -> None:
     model.eval()
     print(f"Model loaded on {device}\n")
 
+    # ---- build policy callable ----
+    def local_policy(messages: List[dict]) -> str:
+        return generate_response(model, tokenizer, messages, device)
+
     # ---- run episodes ----
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
     all_results: List[Dict[str, Any]] = []
 
     for task_id in tasks:
-        result = run_episode(model, tokenizer, task_id, args.seed, device)
+        env = FlightRebookingEnvironment(debug=False)
+        obs = env.reset(seed=args.seed, task_id=task_id)
+        result = run_episode(env, obs, local_policy)
+        result["seed"] = args.seed
         all_results.append(result)
 
     # ---- final summary ----
