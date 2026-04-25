@@ -72,7 +72,7 @@ def main() -> None:
 
     from training.config import build_grpo_config, build_model_and_tokenizer
     from training.dataset import build_dataset
-    from training.rewards import REWARD_FUNCS, REWARD_WEIGHTS
+    from training.rewards import REWARD_FUNCS
     from training.rollout import rollout_func
     from training.space_runner import (
         HUB_REPOS,
@@ -188,7 +188,6 @@ def main() -> None:
         args=grpo_config,
         train_dataset=dataset,
         reward_funcs=REWARD_FUNCS,
-        reward_weights=REWARD_WEIGHTS,
         env=rollout_func,
     )
 
