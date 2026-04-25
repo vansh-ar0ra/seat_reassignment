@@ -29,12 +29,12 @@ RUN git clone ${PROJECT_REPO} /app && \
 WORKDIR /app
 
 # Install Python dependencies
-# 1. Install unsloth first (it brings its own vllm fork)
-# 2. Then install trl + standard vllm on top to ensure GuidedDecodingParams exists
+# 1. Install unsloth first (it pulls its own vllm/trl — often too new)
+# 2. Then force-install pinned trl + vllm from requirements-train.txt
 # 3. Then extras
 RUN pip install --no-cache-dir unsloth && \
     pip install --no-cache-dir -r requirements-train.txt && \
-    pip install --no-cache-dir --force-reinstall "vllm>=0.6.0" && \
+    pip install --no-cache-dir --force-reinstall "trl>=0.17.0,<0.20.0" "vllm>=0.6.0,<0.12.0" && \
     pip install --no-cache-dir trackio huggingface_hub hf_transfer
 
 # Log installed versions for debugging
