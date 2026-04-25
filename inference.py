@@ -40,7 +40,7 @@ ENV_URL = os.getenv("ENV_URL") or os.getenv("SERVER_URL") or "http://localhost:8
 # ---------------------------------------------------------------------------
 BENCHMARK = "flight_rebooking"
 TEMPERATURE = 0.3
-MAX_TOKENS = 1000
+MAX_TOKENS = 4000
 
 # ---------------------------------------------------------------------------
 # System prompt (constant across all difficulty tiers)
@@ -64,71 +64,63 @@ Produce a rebooking plan that gets every passenger to their destination while re
 
 5. SOFT GROUP INTEGRITY: passengers in a "soft" group should be kept together when possible, but splitting is acceptable.
 
-6. FALLBACK ORDER: if original cabin is unavailable, try split-cabin on same flight before splitting across flights.
-
 TOOLS AVAILABLE:
 Each turn you must call exactly one tool.
 
-1. list_passengers()
-   - Returns a summary of all passengers: ID, priority tier, group ID, and flags for SSR/deadline.
-   - Call this first to plan your approach.
+1. get_full_manifest()
+   - Returns ALL passenger details in one call: ID, name, priority tier, original cabin, group info, SSR flags, deadlines.
+   - Call this first to understand all passengers and their constraints.
 
-2. get_passenger_details(passenger_id)
-   - Returns full details: original cabin, SSR flags, group membership, deadline, priority.
-   - Use before booking a passenger whose constraints you need to check.
+2. get_flight_inventory()
+   - Returns ALL available flights with per-cabin seat counts, departure/arrival times, and SSR support.
+   - Call this to understand available capacity and constraints.
 
-3. list_alternative_flights()
-   - Returns all available flights with per-cabin seat counts, times, and SSR support.
-   - Seat counts update after bookings. Call again to refresh availability.
+3. submit_plan(assignments)
+   - Submit a complete rebooking plan mapping each passenger to a flight and cabin.
+   - assignments is a dict: {"PAX-001": {"flight_id": "FL-201", "cabin": "business"}, ...}
+   - The plan is validated atomically. Each passenger is either accepted or rejected with a reason.
+   - Returns per-passenger results, group integrity checks, and a score preview.
+   - Only ONE submission allowed per episode.
 
-4. get_flight_details(flight_id)
-   - Returns details for one specific flight including current availability.
-
-5. book_passenger(passenger_id, flight_id, cabin)
-   - Books one passenger onto a flight in the specified cabin (economy|premium_economy|business).
-   - Will be rejected if: no seats, SSR mismatch, deadline violation, or already booked.
-   - For hard group members, prefer book_group instead.
-
-6. book_group(group_id, flight_id, cabin_assignments)
-   - Books an entire group onto one flight atomically. All succeed or all fail.
-   - cabin_assignments is a dict mapping each passenger_id to their cabin.
-
-7. finalize_plan()
-   - Call this when you are done. Triggers final scoring. Unbooked passengers count as failures.
+4. finalize_plan()
+   - Lock in your submitted plan and trigger final grading.
+   - Unbooked passengers (rejected or missing from plan) count as failures.
+   - Call this after reviewing your submit_plan results.
 
 ACTION FORMAT:
 Respond with ONLY a raw JSON object. No reasoning, no markdown, no extra text.
 Examples:
-{"tool_name": "list_passengers", "args": {}}
-{"tool_name": "get_passenger_details", "args": {"passenger_id": "PAX-001"}}
-{"tool_name": "list_alternative_flights", "args": {}}
-{"tool_name": "get_flight_details", "args": {"flight_id": "FL-201"}}
-{"tool_name": "book_passenger", "args": {"passenger_id": "PAX-001", "flight_id": "FL-201", "cabin": "business"}}
-{"tool_name": "book_group", "args": {"group_id": "GRP-001", "flight_id": "FL-201", "cabin_assignments": {"PAX-002": "economy", "PAX-003": "economy"}}}
+{"tool_name": "get_full_manifest", "args": {}}
+{"tool_name": "get_flight_inventory", "args": {}}
+{"tool_name": "submit_plan", "args": {"assignments": {"PAX-001": {"flight_id": "FL-201", "cabin": "business"}, "PAX-002": {"flight_id": "FL-201", "cabin": "economy"}}}}
 {"tool_name": "finalize_plan", "args": {}}
 
 STRATEGY:
-1. Start with list_passengers and list_alternative_flights to survey the situation.
-2. Identify constrained passengers: those with SSR flags, deadlines, or hard group membership.
-3. Book the most constrained passengers first (hard groups, SSR+deadline combos).
-4. Then book remaining passengers in priority-tier order, matching original cabin.
-5. Use book_group for groups (especially hard groups) to keep them together atomically.
-6. After all passengers are booked, call finalize_plan.
-7. If a booking fails, check why and try an alternative flight or cabin.
+1. Call get_full_manifest() to see all passengers, their constraints, groups, SSR needs, and deadlines.
+2. Call get_flight_inventory() to see all flights, their capacity, times, and SSR support.
+3. Reason about constraints:
+   - Match SSR passengers to compatible flights only.
+   - Place hard group members on the same flight.
+   - Respect downstream deadlines.
+   - Match original cabins when possible.
+   - Handle capacity limits across all flights.
+4. Submit a complete plan with submit_plan() covering ALL passengers.
+5. Review the results (accepted/rejected counts, constraint violations).
+6. Call finalize_plan() to lock in and get your final score.
 
 IMPORTANT:
-- Always call list_passengers first to understand the problem.
+- You have very few steps. Be efficient — gather info, plan carefully, submit, finalize.
 - Never violate hard constraints — the penalty is severe.
-- Book hard groups with book_group, not individual book_passenger calls.
+- Include ALL passengers in your plan to maximize coverage score.
 - Call finalize_plan when done — unbooked passengers hurt your score."""
 
 # ---------------------------------------------------------------------------
 # Task definitions: (task_name, task_id, max_steps)
 # ---------------------------------------------------------------------------
 TASKS = [
-    ("task_easy",   "easy",   30),
-    ("task_medium", "medium", 60),
-    ("task_hard",   "hard",   90),
+    ("task_easy",   "easy",   5),
+    ("task_medium", "medium", 5),
+    ("task_hard",   "hard",   5),
 ]
 
 # ---------------------------------------------------------------------------
@@ -146,24 +138,14 @@ def format_state(obs) -> str:
     parts = [
         f"=== Step {obs.step_count}/{obs.max_steps} | "
         f"Booked: {obs.passengers_booked}/{obs.passengers_total} | "
-        f"Remaining: {obs.passengers_remaining} ==="
+        f"Remaining: {obs.passengers_remaining} | "
+        f"Plan submitted: {obs.plan_submitted} ==="
     ]
 
     if obs.booked_summary:
-        parts.append("\nCurrent bookings:")
+        parts.append("\nCurrent accepted bookings:")
         for b in obs.booked_summary:
             parts.append(f"  {b['passenger_id']} -> {b['flight_id']} ({b['cabin']})")
-
-    if obs.flights_snapshot:
-        parts.append("\nFlight availability:")
-        for fl in obs.flights_snapshot:
-            avail = ", ".join(
-                f"{c}={n}" for c, n in fl["cabin_availability"].items() if n > 0
-            )
-            parts.append(
-                f"  {fl['flight_id']} dep={fl['departure_time']} arr={fl['arrival_time']} "
-                f"SSR={fl['supports_ssr']} [{avail}]"
-            )
 
     return "\n".join(parts)
 
@@ -264,10 +246,12 @@ def get_agent_action(
 # ---------------------------------------------------------------------------
 
 def fallback_action(obs) -> dict:
-    """Simple fallback: list passengers if nothing booked yet, else list flights."""
-    if obs.passengers_booked == 0:
-        return {"tool_name": "list_passengers", "args": {}}
-    return {"tool_name": "list_alternative_flights", "args": {}}
+    """Simple fallback: gather info first, then finalize."""
+    if obs.step_count == 0:
+        return {"tool_name": "get_full_manifest", "args": {}}
+    if not obs.plan_submitted:
+        return {"tool_name": "get_flight_inventory", "args": {}}
+    return {"tool_name": "finalize_plan", "args": {}}
 
 
 # ---------------------------------------------------------------------------

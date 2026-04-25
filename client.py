@@ -22,7 +22,7 @@ class FlightRebookingEnv(EnvClient[FlightRebookingAction, FlightRebookingObserva
         ...     print(obs.passengers_remaining)
         ...
         ...     action = FlightRebookingAction(
-        ...         tool_name="list_passengers",
+        ...         tool_name="get_full_manifest",
         ...         args={},
         ...     )
         ...     result = env.step(action)

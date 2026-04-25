@@ -1,27 +1,19 @@
 """
-Tool functions for the Flight Rebooking Environment.
+Tool functions for the Flight Rebooking Environment (plan-then-commit model).
+
+4 tools:
+  1. get_full_manifest    — return ALL passenger details in one call
+  2. get_flight_inventory — return ALL flights with availability and SSR support
+  3. submit_plan          — submit a complete rebooking plan (one shot, no revisions)
+  4. finalize_plan        — lock in the current plan, trigger grading
 
 Each function takes an EpisodeState object and named arguments.
-The EpisodeState is expected to have:
-
-    ep.passengers              Dict[str, dict]  passenger_id -> full record
-    ep.flights                 Dict[str, dict]  flight_id -> full record
-    ep.groups                  Dict[str, List[str]]  group_id -> [passenger_ids]
-    ep.bookings                Dict[str, dict]  passenger_id -> {flight_id, cabin}
-    ep.flight_availability     Dict[str, Dict[str, int]]  flight_id -> {cabin: count}
-    ep.passenger_details_fetched  Set[str]  passenger_ids whose details have been fetched
-    ep.info_calls              Dict[str, int]  tool_name -> call count
-    ep.last_booking_step       int
-    ep.step_count              int
-    ep.done                    bool
-
 All functions return a dict with a "status" key ("success" or "error").
-On error, a "message" key describes what went wrong.
-No exceptions are raised for invalid inputs; they are returned as error dicts.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,75 +38,40 @@ def meets_deadline(arrival_time: str, deadline: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Tool 1: list_passengers
+# Tool 1: get_full_manifest
 # ---------------------------------------------------------------------------
 
-def tool_list_passengers(ep) -> dict:
-    """Return a lightweight summary of all passengers."""
-    ep.info_calls["list_passengers"] = ep.info_calls.get("list_passengers", 0) + 1
-
-    summary = []
+def tool_get_full_manifest(ep) -> dict:
+    """Return full details for ALL passengers in one call."""
+    passengers_list = []
     for pid, pax in ep.passengers.items():
-        summary.append({
+        entry = {
             "passenger_id": pid,
+            "name": pax["name"],
             "priority_tier": pax["priority_tier"],
+            "original_cabin": pax["original_cabin"],
             "group_id": pax["group_id"],
-            "has_ssr": len(pax["ssr_flags"]) > 0,
-            "has_deadline": pax["downstream_deadline"] is not None,
-            "booked": pid in ep.bookings,
-        })
-
-    return {"status": "success", "passengers": summary}
-
-
-# ---------------------------------------------------------------------------
-# Tool 2: get_passenger_details
-# ---------------------------------------------------------------------------
-
-def tool_get_passenger_details(ep, passenger_id: str) -> dict:
-    """Return the full record for a single passenger."""
-    if passenger_id not in ep.passengers:
-        return {
-            "status": "error",
-            "message": f"Passenger {passenger_id} does not exist",
+            "group_integrity": pax["group_integrity"],
+            "group_size": pax["group_size"],
+            "ssr_flags": pax["ssr_flags"],
+            "downstream_deadline": pax["downstream_deadline"],
         }
+        if pid in ep.bookings:
+            entry["current_booking"] = {
+                "flight_id": ep.bookings[pid]["flight_id"],
+                "cabin": ep.bookings[pid]["cabin"],
+            }
+        passengers_list.append(entry)
 
-    ep.passenger_details_fetched.add(passenger_id)
-
-    pax = ep.passengers[passenger_id]
-    result = {
-        "status": "success",
-        "passenger_id": passenger_id,
-        "name": pax["name"],
-        "priority_tier": pax["priority_tier"],
-        "original_cabin": pax["original_cabin"],
-        "group_id": pax["group_id"],
-        "group_integrity": pax["group_integrity"],
-        "group_size": pax["group_size"],
-        "ssr_flags": pax["ssr_flags"],
-        "downstream_deadline": pax["downstream_deadline"],
-    }
-
-    if passenger_id in ep.bookings:
-        booking = ep.bookings[passenger_id]
-        result["current_booking"] = {
-            "flight_id": booking["flight_id"],
-            "cabin": booking["cabin"],
-        }
-
-    return result
+    return {"status": "success", "passengers": passengers_list}
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: list_alternative_flights
+# Tool 2: get_flight_inventory
 # ---------------------------------------------------------------------------
 
-def tool_list_alternative_flights(ep) -> dict:
-    """Return all alternative flights with current availability."""
-    ep.info_calls["list_alternative_flights"] = (
-        ep.info_calls.get("list_alternative_flights", 0) + 1
-    )
-
+def tool_get_flight_inventory(ep) -> dict:
+    """Return all flights with current availability and SSR support."""
     flights_list = []
     for fid, fl in ep.flights.items():
         flights_list.append({
@@ -129,315 +86,185 @@ def tool_list_alternative_flights(ep) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Tool 4: get_flight_details
+# Tool 3: submit_plan
 # ---------------------------------------------------------------------------
 
-def tool_get_flight_details(ep, flight_id: str) -> dict:
-    """Return full details for a single flight including current availability."""
-    ep.info_calls["get_flight_details"] = (
-        ep.info_calls.get("get_flight_details", 0) + 1
-    )
-
-    if flight_id not in ep.flights:
-        return {
-            "status": "error",
-            "message": f"Flight {flight_id} does not exist",
-        }
-
-    fl = ep.flights[flight_id]
-    return {
-        "status": "success",
-        "flight_id": flight_id,
-        "departure_time": fl["departure_time"],
-        "arrival_time": fl["arrival_time"],
-        "cabin_availability": dict(ep.flight_availability[flight_id]),
-        "supports_ssr": fl["supports_ssr"],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tool 5: book_passenger
-# ---------------------------------------------------------------------------
-
-def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> dict:
+def tool_submit_plan(ep, assignments: "Dict[str, dict]", reward_computer=None) -> dict:
     """
-    Book a single passenger onto a flight in the specified cabin.
+    Submit a complete rebooking plan. Validated atomically.
+    Only ONE submission allowed per episode -- no revisions.
 
-    Validation chain:
-    1. Passenger exists
-    2. Passenger not already booked
-    3. Flight exists
-    4. Cabin is valid
-    5. Cabin has availability > 0
-    6. Flight supports all of passenger's SSR flags
-    7. If downstream_deadline, arrival_time <= deadline
-    8. If hard group member, warn (should use book_group)
+    assignments: dict mapping passenger_id -> {"flight_id": str, "cabin": str}
 
-    On success: decrements availability, adds to bookings.
+    Returns per-passenger results, group integrity results, and a grader preview.
     """
-    # 1. Passenger exists
-    if passenger_id not in ep.passengers:
+    # 0. Check if plan already submitted
+    if ep.plan_submitted:
         return {
             "status": "error",
-            "message": f"Passenger {passenger_id} does not exist",
+            "message": "Plan already submitted. No revisions allowed.",
         }
 
-    # 2. Not already booked
-    if passenger_id in ep.bookings:
-        existing = ep.bookings[passenger_id]
-        return {
-            "status": "error",
-            "message": (
-                f"Passenger {passenger_id} is already booked on "
-                f"{existing['flight_id']} in {existing['cabin']}"
-            ),
+    # 1. Reset bookings and availability to initial state
+    ep.bookings = {}
+    ep.flight_availability = copy.deepcopy(ep.initial_availability)
+
+    per_passenger = []
+    constraint_violations = []
+
+    # 2. Process each assignment
+    for passenger_id, assignment in assignments.items():
+        flight_id = assignment.get("flight_id", "")
+        cabin = assignment.get("cabin", "")
+        result_entry = {
+            "passenger_id": passenger_id,
+            "flight_id": flight_id,
+            "cabin": cabin,
         }
 
-    # 3. Flight exists
-    if flight_id not in ep.flights:
-        return {
-            "status": "error",
-            "message": f"Flight {flight_id} does not exist",
-        }
+        # 2a. Validate passenger exists
+        if passenger_id not in ep.passengers:
+            result_entry["status"] = "rejected"
+            result_entry["reason"] = f"Passenger {passenger_id} does not exist"
+            per_passenger.append(result_entry)
+            continue
 
-    # 4. Valid cabin
-    if cabin not in VALID_CABINS:
-        return {
-            "status": "error",
-            "message": f"Invalid cabin '{cabin}'. Must be one of: {sorted(VALID_CABINS)}",
-        }
+        # 2b. Validate flight exists
+        if flight_id not in ep.flights:
+            result_entry["status"] = "rejected"
+            result_entry["reason"] = f"Flight {flight_id} does not exist"
+            per_passenger.append(result_entry)
+            continue
 
-    # 5. Availability
-    avail = ep.flight_availability[flight_id].get(cabin, 0)
-    if avail <= 0:
-        return {
-            "status": "error",
-            "message": f"No {cabin} seats available on {flight_id}",
-        }
-
-    pax = ep.passengers[passenger_id]
-    fl = ep.flights[flight_id]
-
-    # 6. SSR compatibility
-    if pax["ssr_flags"]:
-        supported = set(fl["supports_ssr"])
-        required = set(pax["ssr_flags"])
-        missing = required - supported
-        if missing:
-            return {
-                "status": "error",
-                "message": (
-                    f"Flight {flight_id} does not support SSR: {sorted(missing)}. "
-                    f"Passenger {passenger_id} requires {sorted(required)}, "
-                    f"flight supports {sorted(supported)}"
-                ),
-            }
-
-    # 7. Deadline check
-    deadline_met = None
-    if pax["downstream_deadline"]:
-        if not meets_deadline(fl["arrival_time"], pax["downstream_deadline"]):
-            return {
-                "status": "error",
-                "message": (
-                    f"Flight {flight_id} arrives at {fl['arrival_time']} "
-                    f"which is after passenger {passenger_id}'s deadline "
-                    f"of {pax['downstream_deadline']}"
-                ),
-            }
-        deadline_met = True
-
-    # 8. Hard group warning
-    warnings = []
-    if pax["group_id"] and pax["group_integrity"] == "hard":
-        warnings.append(
-            f"Passenger {passenger_id} is in hard group {pax['group_id']}. "
-            f"Consider using book_group to keep the group together."
-        )
-
-    # --- Commit booking ---
-    ep.flight_availability[flight_id][cabin] -= 1
-    ep.bookings[passenger_id] = {"flight_id": flight_id, "cabin": cabin}
-    ep.last_booking_step = ep.step_count
-
-    cabin_match = pax["original_cabin"] == cabin
-
-    result = {
-        "status": "success",
-        "passenger_id": passenger_id,
-        "flight_id": flight_id,
-        "cabin": cabin,
-        "cabin_match": cabin_match,
-        "original_cabin": pax["original_cabin"],
-    }
-    if deadline_met is not None:
-        result["deadline_met"] = deadline_met
-    if warnings:
-        result["warnings"] = warnings
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Tool 6: book_group
-# ---------------------------------------------------------------------------
-
-def tool_book_group(
-    ep,
-    group_id: str,
-    flight_id: str,
-    cabin_assignments: "Dict[str, str]",
-) -> dict:
-    """
-    Book an entire group onto a single flight. Atomic — all or none.
-
-    cabin_assignments maps passenger_id -> cabin for each group member.
-
-    Validation chain:
-    1. Group exists
-    2. All group members present in cabin_assignments and none already booked
-    3. Flight exists
-    4. All cabins valid
-    5. Sufficient capacity for all members
-    6. Flight supports SSR flags of all group members
-    7. Deadline check for all members
-    """
-    # 1. Group exists
-    if group_id not in ep.groups:
-        return {
-            "status": "error",
-            "message": f"Group {group_id} does not exist",
-        }
-
-    member_ids = ep.groups[group_id]
-
-    # 2. All members present and none already booked
-    provided_ids = set(cabin_assignments.keys())
-    expected_ids = set(member_ids)
-    if provided_ids != expected_ids:
-        missing = expected_ids - provided_ids
-        extra = provided_ids - expected_ids
-        parts = []
-        if missing:
-            parts.append(f"missing assignments for: {sorted(missing)}")
-        if extra:
-            parts.append(f"unknown members: {sorted(extra)}")
-        return {
-            "status": "error",
-            "message": f"cabin_assignments mismatch for group {group_id}: {'; '.join(parts)}",
-        }
-
-    for pid in member_ids:
-        if pid in ep.bookings:
-            existing = ep.bookings[pid]
-            return {
-                "status": "error",
-                "message": (
-                    f"Group member {pid} is already booked on "
-                    f"{existing['flight_id']} in {existing['cabin']}"
-                ),
-            }
-
-    # 3. Flight exists
-    if flight_id not in ep.flights:
-        return {
-            "status": "error",
-            "message": f"Flight {flight_id} does not exist",
-        }
-
-    fl = ep.flights[flight_id]
-
-    # 4. All cabins valid
-    for pid, cabin in cabin_assignments.items():
+        # 2c. Validate cabin
         if cabin not in VALID_CABINS:
-            return {
-                "status": "error",
-                "message": (
-                    f"Invalid cabin '{cabin}' for passenger {pid}. "
-                    f"Must be one of: {sorted(VALID_CABINS)}"
-                ),
-            }
+            result_entry["status"] = "rejected"
+            result_entry["reason"] = f"Invalid cabin '{cabin}'. Must be one of: {sorted(VALID_CABINS)}"
+            per_passenger.append(result_entry)
+            continue
 
-    # 5. Capacity check — compute total demand per cabin
-    cabin_demand: dict[str, int] = {}
-    for pid, cabin in cabin_assignments.items():
-        cabin_demand[cabin] = cabin_demand.get(cabin, 0) + 1
+        # 2d. Check cabin availability
+        avail = ep.flight_availability[flight_id].get(cabin, 0)
+        if avail <= 0:
+            result_entry["status"] = "rejected"
+            result_entry["reason"] = f"No {cabin} seats available on {flight_id}"
+            per_passenger.append(result_entry)
+            continue
 
-    for cabin, needed in cabin_demand.items():
-        available = ep.flight_availability[flight_id].get(cabin, 0)
-        if needed > available:
-            return {
-                "status": "error",
-                "message": (
-                    f"Not enough {cabin} seats on {flight_id}: "
-                    f"need {needed}, available {available}"
-                ),
-            }
+        pax = ep.passengers[passenger_id]
+        fl = ep.flights[flight_id]
 
-    # 6. SSR check for all members
-    supported = set(fl["supports_ssr"])
-    for pid in member_ids:
-        pax = ep.passengers[pid]
+        # 2e. SSR compatibility
         if pax["ssr_flags"]:
+            supported = set(fl["supports_ssr"])
             required = set(pax["ssr_flags"])
             missing = required - supported
             if missing:
-                return {
-                    "status": "error",
-                    "message": (
-                        f"Flight {flight_id} does not support SSR: {sorted(missing)}. "
-                        f"Group member {pid} requires {sorted(required)}, "
-                        f"flight supports {sorted(supported)}"
-                    ),
-                }
+                result_entry["status"] = "rejected"
+                result_entry["reason"] = (
+                    f"Flight {flight_id} does not support SSR: {sorted(missing)}. "
+                    f"Passenger requires {sorted(required)}, "
+                    f"flight supports {sorted(supported)}"
+                )
+                per_passenger.append(result_entry)
+                continue
 
-    # 7. Deadline check for all members
-    for pid in member_ids:
-        pax = ep.passengers[pid]
+        # 2f. Deadline check
         if pax["downstream_deadline"]:
             if not meets_deadline(fl["arrival_time"], pax["downstream_deadline"]):
-                return {
-                    "status": "error",
-                    "message": (
-                        f"Flight {flight_id} arrives at {fl['arrival_time']} "
-                        f"which is after group member {pid}'s deadline "
-                        f"of {pax['downstream_deadline']}"
-                    ),
-                }
+                result_entry["status"] = "rejected"
+                result_entry["reason"] = (
+                    f"Flight {flight_id} arrives at {fl['arrival_time']} "
+                    f"which is after deadline {pax['downstream_deadline']}"
+                )
+                per_passenger.append(result_entry)
+                continue
 
-    # --- Commit all bookings atomically ---
-    booked = []
-    for pid, cabin in cabin_assignments.items():
+        # 2g. All validations passed — accept
         ep.flight_availability[flight_id][cabin] -= 1
-        ep.bookings[pid] = {"flight_id": flight_id, "cabin": cabin}
-        pax = ep.passengers[pid]
-        booked.append({
-            "passenger_id": pid,
-            "cabin": cabin,
-            "cabin_match": pax["original_cabin"] == cabin,
-            "original_cabin": pax["original_cabin"],
+        ep.bookings[passenger_id] = {"flight_id": flight_id, "cabin": cabin}
+        result_entry["status"] = "accepted"
+        result_entry["reason"] = "OK"
+        per_passenger.append(result_entry)
+
+    # 3. Post-validation group integrity check
+    group_results = []
+    for gid, member_ids in ep.groups.items():
+        integrity = ep.passengers[member_ids[0]]["group_integrity"]
+        members_flights = {}
+        for mid in member_ids:
+            if mid in ep.bookings:
+                members_flights[mid] = ep.bookings[mid]["flight_id"]
+            else:
+                members_flights[mid] = None
+
+        booked_flights = set(f for f in members_flights.values() if f is not None)
+        all_booked = all(f is not None for f in members_flights.values())
+
+        if not booked_flights:
+            verdict = "none_booked"
+        elif not all_booked:
+            verdict = "partially_booked"
+            if integrity == "hard":
+                constraint_violations.append(
+                    f"Hard group {gid}: not all members booked"
+                )
+        elif len(booked_flights) == 1:
+            verdict = "together"
+        else:
+            verdict = "split_across_flights"
+            if integrity == "hard":
+                constraint_violations.append(
+                    f"Hard group {gid}: members split across flights {sorted(booked_flights)}"
+                )
+
+        group_results.append({
+            "group_id": gid,
+            "integrity": integrity,
+            "verdict": verdict,
+            "members_flights": members_flights,
         })
 
-    ep.last_booking_step = ep.step_count
+    # 4. Compute grader score preview
+    accepted_count = sum(1 for p in per_passenger if p["status"] == "accepted")
+    rejected_count = sum(1 for p in per_passenger if p["status"] == "rejected")
+
+    preview = 0.0
+    if reward_computer is not None:
+        preview = reward_computer.grader_score(
+            ep.bookings, ep.passengers, ep.flights, ep.groups
+        )
+
+    # 5. Store preview and mark plan as submitted
+    ep.last_plan_preview = preview
+    ep.plan_submitted = True
 
     return {
         "status": "success",
-        "group_id": group_id,
-        "flight_id": flight_id,
-        "booked": booked,
+        "per_passenger": per_passenger,
+        "group_results": group_results,
+        "plan_score_preview": round(preview, 6),
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "total": len(assignments),
+        "constraint_violations": constraint_violations,
     }
 
 
 # ---------------------------------------------------------------------------
-# Tool 7: finalize_plan
+# Tool 4: finalize_plan
 # ---------------------------------------------------------------------------
 
 def tool_finalize_plan(ep) -> dict:
     """
     End the episode and trigger grading.
-
-    Returns a status dict. The environment.step() method handles
-    computing and attaching the grader score.
+    Returns a warning if no plan has been submitted.
     """
+    if not ep.plan_submitted:
+        ep.done = True
+        return {
+            "status": "success",
+            "message": "Finalized without a submitted plan. Score will be low.",
+        }
     ep.done = True
     return {"status": "success", "message": "Plan finalized. Grading in progress."}

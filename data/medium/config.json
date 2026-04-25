@@ -1,6 +1,6 @@
 {
     "task_id": "medium",
-    "max_steps": 60,
+    "max_steps": 5,
     "cancelled_flight": "FL-100",
     "destination": "DEL"
 }

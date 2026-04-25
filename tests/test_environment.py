@@ -1,5 +1,5 @@
 """
-Integration tests for FlightRebookingEnvironment.
+Integration tests for FlightRebookingEnvironment (plan-then-commit model).
 
 Tests instantiate the environment directly — no server, no WebSocket.
 
@@ -30,105 +30,70 @@ def call_tool(env, tool_name, **args) -> FlightRebookingObservation:
     return env.step(FlightRebookingAction(tool_name=tool_name, args=args))
 
 
-def book(env, passenger_id, flight_id, cabin) -> FlightRebookingObservation:
-    return call_tool(env, "book_passenger",
-                     passenger_id=passenger_id, flight_id=flight_id, cabin=cabin)
-
-
-def book_group(env, group_id, flight_id, cabin_assignments) -> FlightRebookingObservation:
-    return call_tool(env, "book_group",
-                     group_id=group_id, flight_id=flight_id,
-                     cabin_assignments=cabin_assignments)
+def submit_plan(env, assignments) -> FlightRebookingObservation:
+    return call_tool(env, "submit_plan", assignments=assignments)
 
 
 # ---------------------------------------------------------------------------
-# Known-optimal assignments for each tier (grader ≈ 1.0)
+# Known-optimal assignments for each tier (grader ~ 1.0)
 # ---------------------------------------------------------------------------
 
 OPTIMAL_EASY = {
-    "PAX-E001": ("FL-201", "business"),
-    "PAX-E002": ("FL-201", "business"),
-    "PAX-E003": ("FL-202", "business"),
-    "PAX-E004": ("FL-201", "economy"),
-    "PAX-E005": ("FL-201", "economy"),
-    "PAX-E006": ("FL-202", "economy"),
-    "PAX-E007": ("FL-201", "economy"),
-    "PAX-E008": ("FL-203", "economy"),
+    "PAX-E001": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-E002": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-E003": {"flight_id": "FL-202", "cabin": "business"},
+    "PAX-E004": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-E005": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-E006": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-E007": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-E008": {"flight_id": "FL-203", "cabin": "economy"},
 }
 
-# Medium: individuals (non-group members)
-OPTIMAL_MEDIUM_INDIVIDUAL = {
-    "PAX-M001": ("FL-201", "business"),
-    "PAX-M002": ("FL-201", "business"),
-    "PAX-M006": ("FL-201", "premium_economy"),
-    "PAX-M015": ("FL-201", "premium_economy"),
-    "PAX-M007": ("FL-201", "economy"),
-    "PAX-M009": ("FL-201", "economy"),
-    "PAX-M010": ("FL-202", "business"),
-    "PAX-M011": ("FL-202", "business"),
-    "PAX-M012": ("FL-202", "premium_economy"),
-    "PAX-M008": ("FL-202", "economy"),
-    "PAX-M013": ("FL-202", "economy"),
-    "PAX-M014": ("FL-203", "economy"),
+OPTIMAL_MEDIUM = {
+    "PAX-M001": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-M002": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-M003": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-M004": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-M005": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-M006": {"flight_id": "FL-201", "cabin": "premium_economy"},
+    "PAX-M007": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-M008": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-M009": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-M010": {"flight_id": "FL-202", "cabin": "business"},
+    "PAX-M011": {"flight_id": "FL-202", "cabin": "business"},
+    "PAX-M012": {"flight_id": "FL-202", "cabin": "premium_economy"},
+    "PAX-M013": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-M014": {"flight_id": "FL-203", "cabin": "economy"},
+    "PAX-M015": {"flight_id": "FL-201", "cabin": "premium_economy"},
 }
 
-OPTIMAL_MEDIUM_GROUPS = {
-    "GRP-M01": ("FL-201", {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"}),
+OPTIMAL_HARD = {
+    "PAX-H001": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-H002": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-H003": {"flight_id": "FL-201", "cabin": "business"},
+    "PAX-H004": {"flight_id": "FL-202", "cabin": "business"},
+    "PAX-H005": {"flight_id": "FL-203", "cabin": "business"},
+    "PAX-H006": {"flight_id": "FL-202", "cabin": "business"},
+    "PAX-H007": {"flight_id": "FL-201", "cabin": "premium_economy"},
+    "PAX-H008": {"flight_id": "FL-201", "cabin": "premium_economy"},
+    "PAX-H009": {"flight_id": "FL-202", "cabin": "premium_economy"},
+    "PAX-H010": {"flight_id": "FL-203", "cabin": "premium_economy"},
+    "PAX-H011": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-H012": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-H013": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-H014": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-H015": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-H016": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-H017": {"flight_id": "FL-202", "cabin": "economy"},
+    "PAX-H018": {"flight_id": "FL-203", "cabin": "economy"},
+    "PAX-H019": {"flight_id": "FL-203", "cabin": "economy"},
+    "PAX-H020": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-H021": {"flight_id": "FL-203", "cabin": "economy"},
+    "PAX-H022": {"flight_id": "FL-204", "cabin": "economy"},
+    "PAX-H023": {"flight_id": "FL-203", "cabin": "economy"},
+    "PAX-H024": {"flight_id": "FL-201", "cabin": "economy"},
+    "PAX-H025": {"flight_id": "FL-204", "cabin": "economy"},
 }
-
-# Hard: individuals (non-group members)
-OPTIMAL_HARD_INDIVIDUAL = {
-    "PAX-H003": ("FL-201", "business"),
-    "PAX-H004": ("FL-202", "business"),
-    "PAX-H005": ("FL-203", "business"),
-    "PAX-H006": ("FL-202", "business"),
-    "PAX-H009": ("FL-202", "premium_economy"),
-    "PAX-H010": ("FL-203", "premium_economy"),
-    "PAX-H017": ("FL-202", "economy"),
-    "PAX-H018": ("FL-203", "economy"),
-    "PAX-H019": ("FL-203", "economy"),
-    "PAX-H020": ("FL-201", "economy"),
-    "PAX-H021": ("FL-203", "economy"),
-    "PAX-H022": ("FL-204", "economy"),
-    "PAX-H023": ("FL-203", "economy"),
-    "PAX-H024": ("FL-201", "economy"),
-    "PAX-H025": ("FL-204", "economy"),
-}
-
-OPTIMAL_HARD_GROUPS = {
-    "GRP-H02": ("FL-201", {"PAX-H001": "business", "PAX-H002": "business"}),
-    "GRP-H04": ("FL-201", {"PAX-H007": "premium_economy", "PAX-H008": "premium_economy"}),
-    "GRP-H01": ("FL-202", {"PAX-H011": "economy", "PAX-H012": "economy", "PAX-H013": "economy"}),
-    "GRP-H03": ("FL-201", {"PAX-H014": "economy", "PAX-H015": "economy", "PAX-H016": "economy"}),
-}
-
-
-def run_optimal_easy(env):
-    """Book all easy passengers optimally, return final obs."""
-    obs = None
-    for pid, (fid, cabin) in OPTIMAL_EASY.items():
-        obs = book(env, pid, fid, cabin)
-    return obs
-
-
-def run_optimal_medium(env):
-    """Book all medium passengers optimally (groups + individuals), return final obs."""
-    obs = None
-    for gid, (fid, assignments) in OPTIMAL_MEDIUM_GROUPS.items():
-        obs = book_group(env, gid, fid, assignments)
-    for pid, (fid, cabin) in OPTIMAL_MEDIUM_INDIVIDUAL.items():
-        obs = book(env, pid, fid, cabin)
-    return obs
-
-
-def run_optimal_hard(env):
-    """Book all hard passengers optimally (groups + individuals), return final obs."""
-    obs = None
-    for gid, (fid, assignments) in OPTIMAL_HARD_GROUPS.items():
-        obs = book_group(env, gid, fid, assignments)
-    for pid, (fid, cabin) in OPTIMAL_HARD_INDIVIDUAL.items():
-        obs = book(env, pid, fid, cabin)
-    return obs
 
 
 # ---------------------------------------------------------------------------
@@ -157,303 +122,155 @@ class TestReset:
     def test_max_steps_set(self):
         env = FlightRebookingEnvironment()
         obs = env.reset(task_id="medium")
-        assert obs.max_steps == 60
+        assert obs.max_steps == 5
 
     def test_unknown_task_raises(self):
         env = FlightRebookingEnvironment()
         with pytest.raises(ValueError, match="Unknown task_id"):
             env.reset(task_id="nonexistent")
 
-    def test_flights_snapshot_initially_none(self):
+    def test_plan_not_submitted_initially(self):
         env = FlightRebookingEnvironment()
         obs = env.reset(task_id="medium")
-        assert obs.flights_snapshot is None
+        assert obs.plan_submitted is False
 
 
 # ---------------------------------------------------------------------------
-# 2. TestListPassengers
+# 2. TestGetFullManifest
 # ---------------------------------------------------------------------------
 
-class TestListPassengers:
+class TestGetFullManifest:
     def test_returns_all_passengers(self):
         env = make_env("medium")
-        obs = call_tool(env, "list_passengers")
+        obs = call_tool(env, "get_full_manifest")
         assert obs.tool_result["status"] == "success"
         assert len(obs.tool_result["passengers"]) == 15
 
-    def test_returns_summary_not_full_details(self):
+    def test_returns_full_details(self):
         env = make_env("medium")
-        obs = call_tool(env, "list_passengers")
+        obs = call_tool(env, "get_full_manifest")
         entry = obs.tool_result["passengers"][0]
         assert "passenger_id" in entry
         assert "priority_tier" in entry
+        assert "original_cabin" in entry
         assert "group_id" in entry
-        assert "has_ssr" in entry
-        assert "has_deadline" in entry
-        # Should NOT have full details
-        assert "original_cabin" not in entry
-        assert "ssr_flags" not in entry
+        assert "ssr_flags" in entry
+        assert "downstream_deadline" in entry
+        assert "group_integrity" in entry
+        assert "group_size" in entry
 
-    def test_reward_is_small_positive_first_call(self):
+    def test_small_negative_reward(self):
         env = make_env("medium")
-        obs = call_tool(env, "list_passengers")
-        assert obs.reward > 0
+        obs = call_tool(env, "get_full_manifest")
+        assert obs.reward < 0  # per_call_cost
 
 
 # ---------------------------------------------------------------------------
-# 3. TestGetPassengerDetails
+# 3. TestGetFlightInventory
 # ---------------------------------------------------------------------------
 
-class TestGetPassengerDetails:
-    def test_returns_full_record(self):
-        env = make_env("medium")
-        obs = call_tool(env, "get_passenger_details", passenger_id="PAX-M001")
-        r = obs.tool_result
-        assert r["status"] == "success"
-        assert r["passenger_id"] == "PAX-M001"
-        assert r["original_cabin"] == "business"
-        assert r["ssr_flags"] == ["UM"]
-        assert r["priority_tier"] == 1
-        assert "group_id" in r
-        assert "downstream_deadline" in r
-
-    def test_nonexistent_passenger_errors(self):
-        env = make_env("medium")
-        obs = call_tool(env, "get_passenger_details", passenger_id="PAX-FAKE")
-        assert obs.tool_result["status"] == "error"
-
-    def test_already_booked_passenger_penalty(self):
-        env = make_env("easy")
-        book(env, "PAX-E001", "FL-201", "business")
-        obs = call_tool(env, "get_passenger_details", passenger_id="PAX-E001")
-        assert obs.tool_result["status"] == "success"
-        assert obs.reward < 0  # penalty for querying already-booked
-
-
-# ---------------------------------------------------------------------------
-# 4. TestListAlternativeFlights
-# ---------------------------------------------------------------------------
-
-class TestListAlternativeFlights:
+class TestGetFlightInventory:
     def test_returns_all_flights(self):
         env = make_env("medium")
-        obs = call_tool(env, "list_alternative_flights")
+        obs = call_tool(env, "get_flight_inventory")
         assert obs.tool_result["status"] == "success"
         assert len(obs.tool_result["flights"]) == 4
 
-    def test_availability_decrements_after_booking(self):
-        env = make_env("easy")
-        obs1 = call_tool(env, "list_alternative_flights")
-        biz_before = None
-        for fl in obs1.tool_result["flights"]:
-            if fl["flight_id"] == "FL-201":
-                biz_before = fl["cabin_availability"]["business"]
-                break
-
-        book(env, "PAX-E001", "FL-201", "business")
-        obs2 = call_tool(env, "list_alternative_flights")
-        biz_after = None
-        for fl in obs2.tool_result["flights"]:
-            if fl["flight_id"] == "FL-201":
-                biz_after = fl["cabin_availability"]["business"]
-                break
-
-        assert biz_after == biz_before - 1
-
     def test_includes_ssr_support(self):
         env = make_env("medium")
-        obs = call_tool(env, "list_alternative_flights")
+        obs = call_tool(env, "get_flight_inventory")
         for fl in obs.tool_result["flights"]:
             assert "supports_ssr" in fl
+            assert "cabin_availability" in fl
 
-    def test_populates_flights_snapshot(self):
-        env = make_env("easy")
-        obs = call_tool(env, "list_alternative_flights")
-        assert obs.flights_snapshot is not None
-        assert len(obs.flights_snapshot) == 3
-
-
-# ---------------------------------------------------------------------------
-# 5. TestGetFlightDetails
-# ---------------------------------------------------------------------------
-
-class TestGetFlightDetails:
-    def test_returns_full_flight(self):
+    def test_small_negative_reward(self):
         env = make_env("medium")
-        obs = call_tool(env, "get_flight_details", flight_id="FL-201")
-        r = obs.tool_result
-        assert r["status"] == "success"
-        assert r["flight_id"] == "FL-201"
-        assert "cabin_availability" in r
-        assert "departure_time" in r
-        assert "arrival_time" in r
-        assert "supports_ssr" in r
-
-    def test_nonexistent_flight_errors(self):
-        env = make_env("medium")
-        obs = call_tool(env, "get_flight_details", flight_id="FL-999")
-        assert obs.tool_result["status"] == "error"
+        obs = call_tool(env, "get_flight_inventory")
+        assert obs.reward < 0  # per_call_cost
 
 
 # ---------------------------------------------------------------------------
-# 6. TestBookPassenger
+# 4. TestSubmitPlan
 # ---------------------------------------------------------------------------
 
-class TestBookPassenger:
-    def test_successful_booking(self):
+class TestSubmitPlan:
+    def test_valid_plan_accepted(self):
         env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-201", "business")
+        obs = submit_plan(env, OPTIMAL_EASY)
         assert obs.tool_result["status"] == "success"
-        assert obs.passengers_remaining == 7
+        assert obs.tool_result["accepted_count"] == 8
+        assert obs.tool_result["rejected_count"] == 0
+        assert obs.passengers_remaining == 0
 
-    def test_cabin_availability_decremented(self):
+    def test_invalid_passenger_rejected(self):
         env = make_env("easy")
-        book(env, "PAX-E001", "FL-201", "business")
-        obs = call_tool(env, "get_flight_details", flight_id="FL-201")
-        assert obs.tool_result["cabin_availability"]["business"] == 3  # was 4
+        bad_plan = {
+            "PAX-FAKE": {"flight_id": "FL-201", "cabin": "economy"},
+            "PAX-E001": {"flight_id": "FL-201", "cabin": "business"},
+        }
+        obs = submit_plan(env, bad_plan)
+        assert obs.tool_result["status"] == "success"
+        assert obs.tool_result["rejected_count"] == 1
+        assert obs.tool_result["accepted_count"] == 1
 
-    def test_same_cabin_positive_reward(self):
-        env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-201", "business")  # business -> business
-        assert obs.reward > 0
-
-    def test_upgrade_positive_reward(self):
-        env = make_env("easy")
-        obs = book(env, "PAX-E004", "FL-201", "business")  # economy -> business
-        assert obs.reward > 0
-
-    def test_downgrade_small_reward(self):
-        env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-201", "economy")  # business -> economy
-        assert obs.reward > 0  # still positive but small
-
-    def test_double_booking_errors(self):
-        env = make_env("easy")
-        book(env, "PAX-E001", "FL-201", "business")
-        obs = book(env, "PAX-E001", "FL-202", "business")
-        assert obs.tool_result["status"] == "error"
-        assert "already booked" in obs.tool_result["message"].lower()
-
-    def test_no_availability_errors(self):
-        """Fill all business seats on FL-203 (only 2), then try a third."""
-        env = make_env("easy")
-        book(env, "PAX-E001", "FL-203", "business")
-        book(env, "PAX-E002", "FL-203", "business")
-        obs = book(env, "PAX-E003", "FL-203", "business")
-        assert obs.tool_result["status"] == "error"
-        assert "no" in obs.tool_result["message"].lower() and "available" in obs.tool_result["message"].lower()
-
-    def test_ssr_mismatch_errors(self):
+    def test_ssr_violation_rejected(self):
         """PAX-M001 has UM SSR. FL-202 does not support UM."""
         env = make_env("medium")
-        obs = book(env, "PAX-M001", "FL-202", "business")
-        assert obs.tool_result["status"] == "error"
-        assert "ssr" in obs.tool_result["message"].lower()
+        plan = {"PAX-M001": {"flight_id": "FL-202", "cabin": "business"}}
+        obs = submit_plan(env, plan)
+        result = obs.tool_result
+        rejected = [p for p in result["per_passenger"] if p["status"] == "rejected"]
+        assert len(rejected) == 1
+        assert "ssr" in rejected[0]["reason"].lower()
 
-    def test_deadline_violation_errors(self):
+    def test_capacity_overflow_rejected(self):
+        """FL-203 has only 2 business seats. Try to book 3."""
+        env = make_env("easy")
+        plan = {
+            "PAX-E001": {"flight_id": "FL-203", "cabin": "business"},
+            "PAX-E002": {"flight_id": "FL-203", "cabin": "business"},
+            "PAX-E003": {"flight_id": "FL-203", "cabin": "business"},
+        }
+        obs = submit_plan(env, plan)
+        assert obs.tool_result["accepted_count"] == 2
+        assert obs.tool_result["rejected_count"] == 1
+
+    def test_deadline_violation_rejected(self):
         """PAX-M006 has deadline 14:30. FL-204 arrives 18:15."""
         env = make_env("medium")
-        obs = book(env, "PAX-M006", "FL-204", "premium_economy")
-        assert obs.tool_result["status"] == "error"
-        assert "deadline" in obs.tool_result["message"].lower()
+        plan = {"PAX-M006": {"flight_id": "FL-204", "cabin": "premium_economy"}}
+        obs = submit_plan(env, plan)
+        rejected = [p for p in obs.tool_result["per_passenger"] if p["status"] == "rejected"]
+        assert len(rejected) == 1
+        assert "deadline" in rejected[0]["reason"].lower()
 
-    def test_nonexistent_passenger_errors(self):
-        env = make_env("easy")
-        obs = book(env, "PAX-FAKE", "FL-201", "economy")
-        assert obs.tool_result["status"] == "error"
+    def test_hard_group_split_detected(self):
+        """GRP-M01 (hard) split across flights should trigger constraint_violations."""
+        env = make_env("medium")
+        plan = {
+            "PAX-M003": {"flight_id": "FL-201", "cabin": "economy"},
+            "PAX-M004": {"flight_id": "FL-202", "cabin": "economy"},
+            "PAX-M005": {"flight_id": "FL-201", "cabin": "economy"},
+        }
+        obs = submit_plan(env, plan)
+        assert len(obs.tool_result["constraint_violations"]) > 0
 
-    def test_nonexistent_flight_errors(self):
+    def test_preview_score_returned(self):
         env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-999", "economy")
-        assert obs.tool_result["status"] == "error"
+        obs = submit_plan(env, OPTIMAL_EASY)
+        assert "plan_score_preview" in obs.tool_result
+        assert obs.tool_result["plan_score_preview"] > 0.9
 
-    def test_invalid_cabin_errors(self):
+    def test_duplicate_submit_rejected(self):
         env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-201", "first_class")
+        submit_plan(env, OPTIMAL_EASY)
+        obs = submit_plan(env, OPTIMAL_EASY)
         assert obs.tool_result["status"] == "error"
-
-    def test_booked_summary_updated(self):
-        env = make_env("easy")
-        book(env, "PAX-E001", "FL-201", "business")
-        obs = book(env, "PAX-E002", "FL-201", "business")
-        assert len(obs.booked_summary) == 2
-        pids = {b["passenger_id"] for b in obs.booked_summary}
-        assert pids == {"PAX-E001", "PAX-E002"}
+        assert "already submitted" in obs.tool_result["message"].lower()
 
 
 # ---------------------------------------------------------------------------
-# 7. TestBookGroup
-# ---------------------------------------------------------------------------
-
-class TestBookGroup:
-    def test_successful_group_booking(self):
-        env = make_env("medium")
-        obs = book_group(env, "GRP-M01", "FL-201",
-                         {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"})
-        assert obs.tool_result["status"] == "success"
-        assert len(obs.tool_result["booked"]) == 3
-        assert obs.passengers_remaining == 12  # 15 - 3
-
-    def test_atomic_failure(self):
-        """If capacity insufficient for all, none are booked."""
-        env = make_env("easy")
-        # FL-203 has 2 business seats. Group needs 3 economy, but let's try
-        # to book a non-existent group — use medium for group test
-        env2 = make_env("medium")
-        # FL-203 has 2 business seats. Try to book GRP-M02 (2 members) in business on FL-203
-        # First fill one business seat
-        book(env2, "PAX-M001", "FL-203", "business")
-        book(env2, "PAX-M002", "FL-203", "business")
-        # Now FL-203 has 0 business seats. Try to book group
-        obs = book_group(env2, "GRP-M02", "FL-203",
-                         {"PAX-M010": "business", "PAX-M011": "business"})
-        assert obs.tool_result["status"] == "error"
-        # Verify neither member was booked
-        assert obs.passengers_booked == 2  # only M001 and M002
-
-    def test_hard_group_same_flight(self):
-        """Hard group members end up on the same flight by design (single flight_id arg)."""
-        env = make_env("medium")
-        obs = book_group(env, "GRP-M01", "FL-201",
-                         {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"})
-        assert obs.tool_result["status"] == "success"
-        # All on FL-201
-        for entry in obs.tool_result["booked"]:
-            assert entry["passenger_id"] in {"PAX-M003", "PAX-M004", "PAX-M005"}
-
-    def test_split_cabin_allowed(self):
-        """Different cabin assignments per member on same flight is valid."""
-        env = make_env("medium")
-        obs = book_group(env, "GRP-M02", "FL-201",
-                         {"PAX-M010": "business", "PAX-M011": "premium_economy"})
-        assert obs.tool_result["status"] == "success"
-
-    def test_ssr_check_all_members(self):
-        """GRP-H01 has PAX-H013 with WCHR. FL-203 doesn't support WCHR -> fail all."""
-        env = make_env("hard")
-        obs = book_group(env, "GRP-H01", "FL-203",
-                         {"PAX-H011": "economy", "PAX-H012": "economy", "PAX-H013": "economy"})
-        assert obs.tool_result["status"] == "error"
-        assert "ssr" in obs.tool_result["message"].lower()
-        assert obs.passengers_booked == 0
-
-    def test_nonexistent_group_errors(self):
-        env = make_env("medium")
-        obs = book_group(env, "GRP-FAKE", "FL-201", {"PAX-M001": "business"})
-        assert obs.tool_result["status"] == "error"
-
-    def test_partially_booked_group_errors(self):
-        """If one member is already booked, the whole group booking fails."""
-        env = make_env("medium")
-        book(env, "PAX-M003", "FL-201", "economy")  # book one member individually
-        obs = book_group(env, "GRP-M01", "FL-201",
-                         {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"})
-        assert obs.tool_result["status"] == "error"
-        assert "already booked" in obs.tool_result["message"].lower()
-
-
-# ---------------------------------------------------------------------------
-# 8. TestFinalizePlan
+# 5. TestFinalizePlan
 # ---------------------------------------------------------------------------
 
 class TestFinalizePlan:
@@ -473,144 +290,56 @@ class TestFinalizePlan:
         score = obs.tool_result["grader_score"]
         assert 0.0 < score < 1.0
 
+    def test_no_plan_finalize_low_score(self):
+        """Finalizing without submitting a plan gives a low score."""
+        env = make_env("easy")
+        obs = call_tool(env, "finalize_plan")
+        assert obs.reward < 0  # penalty for no plan
+
     def test_step_after_done_raises(self):
         env = make_env("easy")
         call_tool(env, "finalize_plan")
         with pytest.raises(RuntimeError, match="terminated"):
-            call_tool(env, "list_passengers")
+            call_tool(env, "get_full_manifest")
 
 
 # ---------------------------------------------------------------------------
-# 9. TestEasyTask
+# 6. TestOptimalPlans
 # ---------------------------------------------------------------------------
 
-class TestEasyTask:
-    def test_reset_fields(self):
-        env = FlightRebookingEnvironment()
-        obs = env.reset(task_id="easy")
-        assert obs.passengers_total == 8
-        assert obs.passengers_remaining == 8
-        assert obs.max_steps == 30
-
-    def test_full_optimal_booking(self):
+class TestOptimalPlans:
+    def test_optimal_easy(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
-        obs = run_optimal_easy(env)
+        submit_plan(env, OPTIMAL_EASY)
+        obs = call_tool(env, "finalize_plan")
         assert obs.done is True
-        assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
         assert score > 0.99
 
-    def test_no_groups_no_ssr(self):
-        """Easy data has no groups and no SSR."""
-        env = make_env("easy")
-        obs = call_tool(env, "list_passengers")
-        for pax in obs.tool_result["passengers"]:
-            assert pax["group_id"] is None
-            assert pax["has_ssr"] is False
-            assert pax["has_deadline"] is False
-
-    def test_step_limit_terminates(self):
-        env = FlightRebookingEnvironment()
-        env.reset(task_id="easy")
-        obs = None
-        for _ in range(30):
-            obs = call_tool(env, "list_passengers")
-        assert obs.done is True
-        assert obs.step_count == 30
-
-
-# ---------------------------------------------------------------------------
-# 10. TestMediumTask
-# ---------------------------------------------------------------------------
-
-class TestMediumTask:
-    def test_reset_fields(self):
-        env = FlightRebookingEnvironment()
-        obs = env.reset(task_id="medium")
-        assert obs.passengers_total == 15
-        assert obs.passengers_remaining == 15
-        assert obs.max_steps == 60
-
-    def test_group_booking_works(self):
-        env = make_env("medium")
-        obs = book_group(env, "GRP-M01", "FL-201",
-                         {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"})
-        assert obs.tool_result["status"] == "success"
-
-    def test_ssr_respected(self):
-        """PAX-M001 has UM SSR. Can book on FL-201 (supports UM) but not FL-202."""
-        env = make_env("medium")
-        obs_bad = book(env, "PAX-M001", "FL-202", "business")
-        assert obs_bad.tool_result["status"] == "error"
-
-    def test_deadline_respected(self):
-        """PAX-M006 has deadline 14:30. FL-201 arrives 12:15 -> OK. FL-204 arrives 18:15 -> fail."""
-        env = make_env("medium")
-        obs = book(env, "PAX-M006", "FL-201", "premium_economy")
-        assert obs.tool_result["status"] == "success"
-
-    def test_full_optimal_booking(self):
+    def test_optimal_medium(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="medium")
-        obs = run_optimal_medium(env)
+        submit_plan(env, OPTIMAL_MEDIUM)
+        obs = call_tool(env, "finalize_plan")
         assert obs.done is True
-        assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
-        assert score > 0.99
+        # Group integrity caps at 0.7 per group, so ~0.955 is the ceiling
+        assert score > 0.95
 
-
-# ---------------------------------------------------------------------------
-# 11. TestHardTask
-# ---------------------------------------------------------------------------
-
-class TestHardTask:
-    def test_reset_fields(self):
-        env = FlightRebookingEnvironment()
-        obs = env.reset(task_id="hard")
-        assert obs.passengers_total == 25
-        assert obs.passengers_remaining == 25
-        assert obs.max_steps == 90
-
-    def test_multiple_groups(self):
-        """Hard data has 4 groups: 2 hard, 2 soft."""
-        env = make_env("hard")
-        obs = call_tool(env, "list_passengers")
-        groups = set()
-        for pax in obs.tool_result["passengers"]:
-            if pax["group_id"]:
-                groups.add(pax["group_id"])
-        assert len(groups) == 4
-
-    def test_ssr_scarcity(self):
-        """Not all flights support all SSRs. PAX-H010 (pet_cabin) can only go on FL-201/FL-203."""
-        env = make_env("hard")
-        obs = book(env, "PAX-H010", "FL-202", "premium_economy")
-        assert obs.tool_result["status"] == "error"
-        assert "ssr" in obs.tool_result["message"].lower()
-
-    def test_capacity_pressure(self):
-        """FL-201 has only 3 business seats. Booking 4 should fail on the 4th."""
-        env = make_env("hard")
-        book(env, "PAX-H003", "FL-201", "business")
-        book(env, "PAX-H004", "FL-201", "business")
-        book(env, "PAX-H005", "FL-201", "business")
-        obs = book(env, "PAX-H006", "FL-201", "business")
-        assert obs.tool_result["status"] == "error"
-        assert "available" in obs.tool_result["message"].lower()
-
-    def test_full_optimal_booking(self):
+    def test_optimal_hard(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="hard")
-        obs = run_optimal_hard(env)
+        submit_plan(env, OPTIMAL_HARD)
+        obs = call_tool(env, "finalize_plan")
         assert obs.done is True
-        assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
-        assert score > 0.99
+        # Group integrity caps at 0.7 per group, so ~0.955 is the ceiling
+        assert score > 0.95
 
 
 # ---------------------------------------------------------------------------
-# 12. TestInvalidTool
+# 7. TestInvalidTool
 # ---------------------------------------------------------------------------
 
 class TestInvalidTool:
@@ -620,12 +349,6 @@ class TestInvalidTool:
         assert obs.tool_result["status"] == "error"
         assert "teleport_passenger" in obs.tool_result["message"]
 
-    def test_empty_args_handled(self):
-        env = make_env("easy")
-        obs = env.step(FlightRebookingAction(tool_name="book_passenger", args={}))
-        assert obs.tool_result["status"] == "error"
-        # Should error gracefully (empty passenger_id), not crash
-
     def test_unknown_tool_gives_negative_reward(self):
         env = make_env("easy")
         obs = env.step(FlightRebookingAction(tool_name="nonexistent", args={}))
@@ -633,33 +356,27 @@ class TestInvalidTool:
 
 
 # ---------------------------------------------------------------------------
-# 13. TestEpisodeCompletion
+# 8. TestEpisodeCompletion
 # ---------------------------------------------------------------------------
 
 class TestEpisodeCompletion:
-    def test_auto_finalize_on_all_booked(self):
-        """Episode ends automatically when all passengers are booked."""
+    def test_state_is_complete_after_finalize(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
-        obs = run_optimal_easy(env)
-        assert obs.done is True
-        assert "grader_score" in obs.tool_result
-
-    def test_state_is_complete(self):
-        env = FlightRebookingEnvironment()
-        env.reset(task_id="easy")
-        run_optimal_easy(env)
+        submit_plan(env, OPTIMAL_EASY)
+        call_tool(env, "finalize_plan")
         s = env.state
         assert s.is_complete is True
         assert s.passengers_booked == 8
         assert s.passengers_remaining == 0
+        assert s.plan_submitted is True
 
     def test_timeout_terminates(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
         obs = None
-        for _ in range(30):
-            obs = call_tool(env, "list_passengers")
+        for _ in range(5):
+            obs = call_tool(env, "get_full_manifest")
         assert obs.done is True
         assert "timed out" in obs.reward_reason.lower()
 
@@ -667,14 +384,15 @@ class TestEpisodeCompletion:
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
         obs = None
-        for _ in range(30):
-            obs = call_tool(env, "list_passengers")
+        for _ in range(5):
+            obs = call_tool(env, "get_full_manifest")
         assert "grader_score" in obs.tool_result
 
     def test_terminal_breakdown_keys(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
-        obs = run_optimal_easy(env)
+        submit_plan(env, OPTIMAL_EASY)
+        obs = call_tool(env, "finalize_plan")
         bd = obs.tool_result["terminal_breakdown"]
         assert set(bd.keys()) == {
             "coverage_score", "cabin_match_score", "group_integrity_score",
@@ -683,6 +401,6 @@ class TestEpisodeCompletion:
 
     def test_cumulative_reward_accumulates(self):
         env = make_env("easy")
-        obs1 = book(env, "PAX-E001", "FL-201", "business")
-        obs2 = book(env, "PAX-E002", "FL-201", "business")
+        obs1 = call_tool(env, "get_full_manifest")
+        obs2 = call_tool(env, "get_flight_inventory")
         assert obs2.cumulative_reward == pytest.approx(obs1.reward + obs2.reward)

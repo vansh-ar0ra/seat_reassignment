@@ -1,9 +1,12 @@
 """
-Reward computation for the Flight Rebooking Environment.
+Reward computation for the Flight Rebooking Environment (plan-then-commit model).
 
-All reward logic lives in RewardComputer. The class is stateless — it
-receives data as arguments and returns (reward_value, reason_string) tuples.
-Constants are defined at module level so they can be imported by tests.
+Simplified reward structure:
+  - Small cost per tool call (info or finalize)
+  - Plan submission reward = grader preview score + per-call cost
+  - Penalties for invalid tools, duplicate submissions, and finalizing without a plan
+
+All grader logic (sub-scores, weights, terminal breakdown) is unchanged.
 """
 
 from __future__ import annotations
@@ -18,26 +21,11 @@ EPS = 1e-4
 
 PRIORITY_WEIGHTS = {1: 1.5, 2: 1.3, 3: 1.0, 4: 0.8, 5: 0.6}
 
-# Step rewards — info tools
-REWARD_LIST_PASSENGERS_FIRST = 0.02
-REWARD_LIST_PASSENGERS_CHURN = -0.01  # 3rd+ call with no intervening bookings
-REWARD_GET_DETAILS_UNBOOKED = 0.02
-REWARD_GET_DETAILS_BOOKED = -0.01
-REWARD_LIST_FLIGHTS = 0.01
-REWARD_GET_FLIGHT_DETAILS = 0.01
-
-# Step rewards — booking outcomes
-REWARD_SAME_CABIN_GROUP = 0.3       # same cabin, whole group together
-REWARD_UPGRADE = 0.10                # upgrade from original cabin
-REWARD_SPLIT_CABIN_SAME_FLIGHT = -0.02  # split across cabins, same flight (group fallback)
-REWARD_DOWNGRADE = -0.02              # cabin downgrade
-REWARD_DEADLINE_BONUS = 0.05         # additional bonus for meeting deadline
-REWARD_HARD_VIOLATION = -0.30        # SSR mismatch, hard group split, deadline miss with alt
-REWARD_FAILED_BOOKING = -0.50        # rejected by environment
-
-# Step rewards — other
+# Step rewards — plan-then-commit model
+REWARD_PER_CALL_COST = -0.005
 REWARD_INVALID_TOOL = -0.20
-REWARD_FINALIZE = 0.0                # finalize itself has no step reward
+REWARD_NO_PLAN_FINALIZE = -0.10
+REWARD_DUPLICATE_SUBMIT = -0.10
 
 # Grader component weights
 GRADER_W_COVERAGE = 0.35
@@ -61,22 +49,13 @@ def priority_weight(tier: int) -> float:
     return PRIORITY_WEIGHTS.get(tier, 1.0)
 
 
-# Cabin ordering for upgrade/downgrade detection
-_CABIN_RANK = {"economy": 0, "premium_economy": 1, "business": 2}
-
-
-def _cabin_rank(cabin: str) -> int:
-    return _CABIN_RANK.get(cabin, 0)
-
-
 # ---------------------------------------------------------------------------
 # RewardComputer
 # ---------------------------------------------------------------------------
 
 class RewardComputer:
     """
-    Stateless reward computer. Instantiated once per episode with the
-    episode-level parameters needed for reward scaling.
+    Stateless reward computer for plan-then-commit model.
     """
 
     def __init__(self, total_passengers: int, max_steps: int):
@@ -84,135 +63,27 @@ class RewardComputer:
         self.max_steps = max_steps
 
     # ------------------------------------------------------------------
-    # Step-level: info calls
+    # Step-level rewards
     # ------------------------------------------------------------------
 
-    def reward_for_info_call(
-        self, tool_name: str, ep_state
-    ) -> Tuple[float, str]:
-        """Compute reward for an information-gathering tool call."""
+    def reward_for_info_call(self) -> Tuple[float, str]:
+        """Reward for an info-gathering call (get_full_manifest, get_flight_inventory)."""
+        return (REWARD_PER_CALL_COST, "Information gathered")
 
-        if tool_name == "list_passengers":
-            count = ep_state.info_calls.get("list_passengers", 0)
-            # Churn: 3rd+ call with no bookings since last list_passengers
-            if count >= 3 and ep_state.last_booking_step < ep_state.step_count - (count - 1):
-                return (REWARD_LIST_PASSENGERS_CHURN,
-                        "Redundant list_passengers call with no intervening bookings")
-            if count == 1:
-                return (REWARD_LIST_PASSENGERS_FIRST,
-                        "First list_passengers call — good planning")
-            return (REWARD_LIST_PASSENGERS_FIRST,
-                    "list_passengers call")
+    def reward_for_plan_submission(self, plan_grader_preview: float) -> Tuple[float, str]:
+        """Reward for submitting a plan. Reward = preview score + per_call_cost."""
+        reward = plan_grader_preview + REWARD_PER_CALL_COST
+        return (reward, f"Plan submitted (preview: {plan_grader_preview:.4f})")
 
-        if tool_name == "get_passenger_details":
-            return (REWARD_GET_DETAILS_UNBOOKED,
-                    "Fetched passenger details")
+    def reward_for_duplicate_submit(self) -> Tuple[float, str]:
+        """Penalty for attempting a second submit_plan (rejected)."""
+        return (REWARD_DUPLICATE_SUBMIT, "Plan already submitted — no revisions allowed")
 
-        if tool_name == "get_passenger_details_booked":
-            return (REWARD_GET_DETAILS_BOOKED,
-                    "Fetched details for already-booked passenger")
-
-        if tool_name == "list_alternative_flights":
-            return (REWARD_LIST_FLIGHTS,
-                    "Listed alternative flights")
-
-        if tool_name == "get_flight_details":
-            return (REWARD_GET_FLIGHT_DETAILS,
-                    "Fetched flight details")
-
-        return (0.0, f"Info call: {tool_name}")
-
-    # ------------------------------------------------------------------
-    # Step-level: booking
-    # ------------------------------------------------------------------
-
-    def reward_for_booking(
-        self,
-        tool_result: dict,
-        passenger: dict,
-        ep_state,
-    ) -> Tuple[float, str]:
-        """Compute reward for a book_passenger call that succeeded."""
-        if tool_result["status"] != "success":
-            return (REWARD_FAILED_BOOKING,
-                    f"Booking failed: {tool_result.get('message', '')}")
-
-        pw = priority_weight(passenger["priority_tier"])
-        assigned_cabin = tool_result["cabin"]
-        original_cabin = passenger["original_cabin"]
-
-        # Cabin comparison
-        assigned_rank = _cabin_rank(assigned_cabin)
-        original_rank = _cabin_rank(original_cabin)
-
-        if assigned_cabin == original_cabin:
-            reward = REWARD_SAME_CABIN_GROUP * pw
-            reason = "Booking: same cabin"
-        elif assigned_rank > original_rank:
-            reward = REWARD_UPGRADE * pw
-            reason = "Booking: cabin upgrade"
-        else:
-            reward = REWARD_DOWNGRADE * pw
-            reason = "Booking: cabin downgrade"
-
-        # Deadline bonus
-        if tool_result.get("deadline_met"):
-            reward += REWARD_DEADLINE_BONUS * pw
-            reason += " + deadline met"
-
-        return (reward, reason)
-
-    def reward_for_group_booking(
-        self,
-        tool_result: dict,
-        group_passengers: List[dict],
-        ep_state,
-    ) -> Tuple[float, str]:
-        """Compute reward for a book_group call that succeeded."""
-        if tool_result["status"] != "success":
-            return (REWARD_FAILED_BOOKING,
-                    f"Group booking failed: {tool_result.get('message', '')}")
-
-        total_reward = 0.0
-        booked_list = tool_result["booked"]
-        cabin_set = set()
-
-        for entry in booked_list:
-            pid = entry["passenger_id"]
-            pax = next(p for p in group_passengers if p["passenger_id"] == pid)
-            pw = priority_weight(pax["priority_tier"])
-
-            assigned_cabin = entry["cabin"]
-            original_cabin = pax["original_cabin"]
-            cabin_set.add(assigned_cabin)
-
-            assigned_rank = _cabin_rank(assigned_cabin)
-            original_rank = _cabin_rank(original_cabin)
-
-            if assigned_cabin == original_cabin:
-                total_reward += REWARD_SAME_CABIN_GROUP * pw
-            elif assigned_rank > original_rank:
-                total_reward += REWARD_UPGRADE * pw
-            else:
-                total_reward += REWARD_DOWNGRADE * pw
-
-            # Deadline bonus
-            if pax.get("downstream_deadline"):
-                total_reward += REWARD_DEADLINE_BONUS * pw
-
-        if len(cabin_set) == 1:
-            reason = "Group booking: all same cabin on same flight"
-        else:
-            reason = "Group booking: split cabin on same flight"
-
-        return (total_reward, reason)
-
-    def reward_for_failed_action(
-        self, tool_result: dict
-    ) -> Tuple[float, str]:
-        """Reward for a booking action rejected by the environment."""
-        return (REWARD_FAILED_BOOKING,
-                f"Action failed: {tool_result.get('message', '')}")
+    def reward_for_finalize(self, has_plan: bool) -> Tuple[float, str]:
+        """Reward for finalizing. Penalty if no plan was submitted."""
+        if not has_plan:
+            return (REWARD_NO_PLAN_FINALIZE, "Finalized without a plan")
+        return (REWARD_PER_CALL_COST, "Plan finalized")
 
     def reward_for_invalid_tool(self) -> Tuple[float, str]:
         """Reward when the agent submits an unrecognized tool name."""

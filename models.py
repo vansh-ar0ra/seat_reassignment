@@ -1,5 +1,5 @@
 """
-Pydantic models for the Flight Rebooking environment.
+Pydantic models for the Flight Rebooking environment (plan-then-commit model).
 
 FlightRebookingAction      — what the agent sends on every step()
 FlightRebookingObservation — what the environment returns to the agent
@@ -17,17 +17,15 @@ class FlightRebookingAction(Action):
     Agent action — a tool call with its named arguments.
 
     Valid tool_name values:
-        list_passengers, get_passenger_details, list_alternative_flights,
-        get_flight_details, book_passenger, book_group, finalize_plan.
+        get_full_manifest, get_flight_inventory, submit_plan, finalize_plan.
     Any other value is routed to the invalid-tool handler inside step().
     """
 
     tool_name: str = Field(
         ...,
         description=(
-            "Tool to call: list_passengers | get_passenger_details | "
-            "list_alternative_flights | get_flight_details | "
-            "book_passenger | book_group | finalize_plan"
+            "Tool to call: get_full_manifest | get_flight_inventory | "
+            "submit_plan | finalize_plan"
         ),
     )
     args: Dict[str, Any] = Field(
@@ -50,11 +48,11 @@ class FlightRebookingObservation(Observation):
     )
     passengers_booked: int = Field(
         default=0,
-        description="Number of passengers successfully booked so far",
+        description="Number of passengers accepted in the current plan",
     )
     passengers_remaining: int = Field(
         default=0,
-        description="Passengers not yet booked onto an alternative flight",
+        description="Passengers not yet accepted in any plan",
     )
 
     # Step feedback
@@ -73,17 +71,16 @@ class FlightRebookingObservation(Observation):
         description="Sum of all rewards received so far in this episode",
     )
 
-    # Summary view (lightweight — not full manifests)
+    # Summary view
     booked_summary: List[dict] = Field(
         default_factory=list,
-        description="List of bookings made so far: [{passenger_id, flight_id, cabin}]",
+        description="List of accepted bookings: [{passenger_id, flight_id, cabin}]",
     )
-    flights_snapshot: Optional[List[dict]] = Field(
-        default=None,
-        description=(
-            "Current flight availability snapshot; only populated after "
-            "list_alternative_flights has been called"
-        ),
+
+    # Plan tracking
+    plan_submitted: bool = Field(
+        default=False,
+        description="Whether a plan has been submitted",
     )
 
 
@@ -99,3 +96,4 @@ class FlightRebookingState(State):
     passengers_remaining: int = Field(default=0)
     cumulative_reward: float = Field(default=0.0)
     is_complete: bool = Field(default=False)
+    plan_submitted: bool = Field(default=False)

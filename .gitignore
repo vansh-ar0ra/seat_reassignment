@@ -9,6 +9,7 @@ venv.bak/
 
 # Project specifics
 debug_logs/
+runs/
 .agents/
 
 # Python

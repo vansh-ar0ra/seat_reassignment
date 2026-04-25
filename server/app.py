@@ -50,7 +50,13 @@ app = create_app(
 def main():
     import uvicorn
 
-    uvicorn.run("server.app:app", host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "server.app:app",
+        host="0.0.0.0",
+        port=8000,
+        ws_ping_interval=600,   # send ping every 60s (keep NAT alive)
+        ws_ping_timeout=None,  # never drop connection for slow pong
+    )
 
 
 if __name__ == "__main__":
