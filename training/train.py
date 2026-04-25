@@ -188,7 +188,7 @@ def main() -> None:
         args=grpo_config,
         train_dataset=dataset,
         reward_funcs=REWARD_FUNCS,
-        env=rollout_func,
+        rollout_func=rollout_func,
     )
 
     # ── Train ───────────────────────────────────────────────

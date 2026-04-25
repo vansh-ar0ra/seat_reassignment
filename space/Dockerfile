@@ -36,7 +36,7 @@ WORKDIR /app
 # 3. Then extras
 RUN pip install --no-cache-dir unsloth && \
     pip install --no-cache-dir -r requirements-train.txt && \
-    pip install --no-cache-dir --force-reinstall "trl>=0.17.0,<0.20.0" "vllm>=0.6.0,<0.12.0" && \
+    pip install --no-cache-dir --force-reinstall "trl>=0.26.0" "vllm>=0.6.0,<0.12.0" && \
     pip install --no-cache-dir trackio huggingface_hub hf_transfer
 
 # Log installed versions for debugging
