@@ -10,6 +10,7 @@ venv.bak/
 # Project specifics
 debug_logs/
 runs/
+inference_logs/
 .agents/
 
 # Python

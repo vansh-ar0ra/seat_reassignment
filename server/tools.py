@@ -114,6 +114,16 @@ def tool_submit_plan(ep, assignments: "Dict[str, dict]", reward_computer=None) -
 
     # 2. Process each assignment
     for passenger_id, assignment in assignments.items():
+        # Skip passengers with null/None assignment (agent chose not to book them)
+        if assignment is None:
+            per_passenger.append({
+                "passenger_id": passenger_id,
+                "flight_id": None,
+                "cabin": None,
+                "status": "skipped",
+                "reason": "No assignment provided",
+            })
+            continue
         flight_id = assignment.get("flight_id", "")
         cabin = assignment.get("cabin", "")
         result_entry = {

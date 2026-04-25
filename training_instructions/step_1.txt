@@ -1,0 +1,16 @@
+Step 0 — Repo audit & training scaffold
+Objective: Understand the existing env contract before writing any training code, and create the training package skeleton.
+Context to load first:
+
+Read the env's main entry module that exposes reset() / step() (or whatever the equivalent is). Note the exact request/response shapes, the action format, and how observations are serialized.
+Read the tool definitions for get_passenger_manifest, get_flight_inventory, read_policy, submit_plan, revise_plan, finalize_plan. Document each tool's input schema and return shape.
+Read the grader and document the 8 component names and their weights.
+Read the procedural data generator: how seeds map to scenarios, and how difficulty tier (easy/medium/hard) is selected.
+
+Deliverables:
+
+A new training/ directory with empty stub files: __init__.py, rollout.py, rewards.py, dataset.py, config.py, train.py, smoke_test.py.
+A training/README.md with a one-page summary of (a) the env contract, (b) the action XML grammar, (c) the 8 grader components, and (d) the seed → scenario mapping. This is reference documentation for every subsequent step.
+A requirements-train.txt pinning: trl>=0.17.0, unsloth, vllm>=0.11.0, peft, transformers, datasets, accelerate, trackio, openenv-core (if env follows OpenEnv).
+
+Definition of done: training/README.md exists and accurately describes the env contract. A new dev could write a rollout against this doc without re-reading env source.

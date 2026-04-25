@@ -72,6 +72,9 @@ class EpisodeState:
     plan_submitted: bool = False
     last_plan_preview: float = 0.0
 
+    # Info-call tracking (tool_name -> call count)
+    info_call_counts: Dict[str, int] = field(default_factory=dict)
+
     # Episode metadata
     task_id: str = ""
     step_count: int = 0
@@ -198,14 +201,24 @@ class FlightRebookingEnvironment(Environment):
         try:
             if tool_name == "get_full_manifest":
                 tool_result = tool_get_full_manifest(ep)
-                reward, reason = rc.reward_for_info_call()
+                repeated = ep.info_call_counts.get(tool_name, 0) > 0
+                ep.info_call_counts[tool_name] = ep.info_call_counts.get(tool_name, 0) + 1
+                reward, reason = rc.reward_for_info_call(repeated=repeated)
 
             elif tool_name == "get_flight_inventory":
                 tool_result = tool_get_flight_inventory(ep)
-                reward, reason = rc.reward_for_info_call()
+                repeated = ep.info_call_counts.get(tool_name, 0) > 0
+                ep.info_call_counts[tool_name] = ep.info_call_counts.get(tool_name, 0) + 1
+                reward, reason = rc.reward_for_info_call(repeated=repeated)
 
             elif tool_name == "submit_plan":
-                assignments = args.get("assignments", {})
+                # Accept both formats:
+                #   {"assignments": {"PAX-001": {...}, ...}}   (canonical)
+                #   {"PAX-001": {...}, ...}                    (flat — LLMs often omit the wrapper)
+                if "assignments" in args:
+                    assignments = args["assignments"]
+                else:
+                    assignments = args
                 if ep.plan_submitted:
                     tool_result = tool_submit_plan(ep, assignments, rc)
                     reward, reason = rc.reward_for_duplicate_submit()

@@ -1,0 +1,18 @@
+Step 3 — TRL-compatible rollout function
+Objective: Refactor the loop from Step 2 into the function signature TRL's GRPOTrainer expects. This is the most important file in the project — get it right.
+Context:
+
+Reference the EcomRLVE training script, added as /Users/u429062/personal_work/seat_reassignment/openRLVE_training_script.py in this project. EcomRLVE is the closer analog because it's multi-turn.
+TRL expects rollout output to include: prompt_ids, completion_ids, logprobs, completion_mask, plus arbitrary keyword fields that get passed to reward functions.
+Critical: completion masking. Across multi-turn trajectories, only model-generated tokens contribute to the policy gradient. Tool result tokens are conditioning context and must be masked out (mask value 0). Construct the mask as you build the trajectory turn-by-turn — do not try to recover it post-hoc by searching the final concatenated string.
+Use vLLM for generation (use_vllm=True, colocate mode). Generation calls go through the trainer's vLLM client, not raw model.generate.
+
+Deliverable: training/rollout.py exporting a single function rollout_func(trainer, prompts, **kwargs) that returns the dict TRL expects. Internally calls a _play_episode(env, model_via_trainer, seed) helper that mirrors the Step 2 loop.
+Constraints:
+
+The function must accept a batch of prompts and return a batch of trajectories. Process them sequentially — parallelism comes from num_generations at the GRPO level.
+Each trajectory's reward components must be returned as separate keys in the kwargs dict — exactly 5 keys mapping one-to-one with the env's sub-scores: coverage_reward, cabin_match_reward, group_integrity_reward, deadline_reward, ssr_integrity_reward. Each is selectable by an individual reward function in Step 4.
+One env instance per rollout — do not share env state across the batch.
+Hardcode nothing about model name or paths; take them via the trainer's tokenizer/model handles.
+
+Definition of done: A unit test in training/tests/test_rollout.py instantiates a mock trainer (with a real Qwen/Qwen3-4B-Instruct-2507), calls rollout_func on 2 prompts, and verifies the output dict has correct keys, that len(completion_ids) == len(prompts), that completion_mask matches completion_ids in shape, and that all 5 reward component keys are present.

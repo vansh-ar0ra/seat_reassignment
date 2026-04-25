@@ -22,10 +22,11 @@ EPS = 1e-4
 PRIORITY_WEIGHTS = {1: 1.5, 2: 1.3, 3: 1.0, 4: 0.8, 5: 0.6}
 
 # Step rewards — plan-then-commit model
-REWARD_PER_CALL_COST = -0.005
+REWARD_PER_CALL_COST = 0.0
 REWARD_INVALID_TOOL = -0.20
 REWARD_NO_PLAN_FINALIZE = -0.10
 REWARD_DUPLICATE_SUBMIT = -0.10
+REWARD_REPEATED_INFO_CALL = -0.05
 
 # Grader component weights
 GRADER_W_COVERAGE = 0.35
@@ -66,8 +67,10 @@ class RewardComputer:
     # Step-level rewards
     # ------------------------------------------------------------------
 
-    def reward_for_info_call(self) -> Tuple[float, str]:
+    def reward_for_info_call(self, repeated: bool = False) -> Tuple[float, str]:
         """Reward for an info-gathering call (get_full_manifest, get_flight_inventory)."""
+        if repeated:
+            return (REWARD_REPEATED_INFO_CALL, "Repeated info call — penalty applied")
         return (REWARD_PER_CALL_COST, "Information gathered")
 
     def reward_for_plan_submission(self, plan_grader_preview: float) -> Tuple[float, str]:

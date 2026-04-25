@@ -1,0 +1,9 @@
+trl>=0.17.0
+unsloth
+vllm>=0.11.0
+peft
+transformers
+datasets
+accelerate
+trackio
+openenv-core

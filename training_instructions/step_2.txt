@@ -1,0 +1,17 @@
+Step 2 — Standalone single-rollout script (no TRL yet)
+Objective: Prove out the full agent loop — generate, parse, step, repeat, score — using the base Qwen model directly via transformers, before adding any TRL machinery. This catches XML parsing bugs, tool dispatch bugs, and reward-call bugs in isolation.
+Context:
+
+The agent emits XML CoT blocks (<observations>, <passenger_analysis>, <strategy>, etc.) and tool calls in a constrained grammar — see training/README.md for the grammar. Need a robust parser that finds the next tool call to execute and ignores reasoning blocks.
+Trajectory is bounded: 4–6 invocations max, terminating on finalize_plan or hard limit.
+Each turn appends both the model's full output and the tool result to the message list, which becomes the prompt for the next turn.
+Loading the base model: use transformers with torch_dtype="bfloat16" for this script (no Unsloth yet — keep it simple).
+
+Deliverable: training/smoke_test.py runs a single episode end-to-end against a fixed seed, prints each turn, and prints final per-component reward + total. Takes --seed and --model CLI args. Default model: Qwen/Qwen2.5-3B-Instruct.
+Constraints:
+
+No GRPO, no LoRA, no quantization yet. Pure inference + env stepping.
+Hard cap at 8 turns even if model never calls finalize_plan, with a small penalty applied.
+Log raw model outputs — we need to see what the base model actually produces to calibrate later steps.
+
+Definition of done: Running python training/smoke_test.py --seed 0 completes without errors and prints a non-zero reward dict. Run on at least 5 seeds across the three difficulty tiers and confirm the parser handles all base-model outputs gracefully (no crashes on malformed XML — fall back to penalty + early termination).

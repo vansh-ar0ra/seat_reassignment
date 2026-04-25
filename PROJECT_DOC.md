@@ -631,7 +631,7 @@ The system prompt (`SYSTEM_PROMPT` in `inference.py`) is **constant across all d
 
 ### 9.3 LLM Integration
 
-- **Model**: Configurable via `MODEL_NAME` env var (default: `Qwen/Qwen2.5-7B-Instruct`)
+- **Model**: Configurable via `MODEL_NAME` env var (default: `Qwen/Qwen2.5-3B-Instruct`)
 - **API**: OpenAI-compatible client pointed at `API_BASE_URL` (default: HuggingFace router)
 - **Temperature**: 0.3 (relatively deterministic)
 - **Max tokens**: 1000 per response
