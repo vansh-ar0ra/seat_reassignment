@@ -49,6 +49,7 @@ REWARD_UNBOOK_RECOVERY = 0.03  # partial offset if recovering from an event
 # Step rewards — other
 REWARD_INVALID_TOOL = -0.20
 REWARD_FINALIZE = 0.0
+REWARD_REPEATED_CALL = -0.05  # penalty for calling same tool with same args >2 times in a row
 
 # Grader component weights (sum to 1.0)
 GRADER_W_COVERAGE = 0.25

@@ -50,7 +50,7 @@ try:
         tool_unbook_passenger,
         tool_finalize_plan,
     )
-    from .rewards import RewardComputer, REWARD_FINALIZE
+    from .rewards import RewardComputer, REWARD_FINALIZE, REWARD_REPEATED_CALL
 except ImportError:
     from models import (
         FlightRebookingAction,
@@ -67,7 +67,7 @@ except ImportError:
         tool_unbook_passenger,
         tool_finalize_plan,
     )
-    from server.rewards import RewardComputer, REWARD_FINALIZE
+    from server.rewards import RewardComputer, REWARD_FINALIZE, REWARD_REPEATED_CALL
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,10 @@ class EpisodeState:
 
     # --- NEW: Difficulty level ---
     difficulty: float = 0.5
+
+    # --- NEW: Repeated tool call tracking ---
+    # Stores recent consecutive (tool_name, args) pairs for repetition detection
+    recent_tool_calls: List[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +369,19 @@ class FlightRebookingEnvironment(Environment):
         except Exception as exc:
             tool_result = {"status": "error", "message": f"Internal error: {exc}"}
             reward, reason = rc.reward_for_invalid_tool()
+
+        # --- Check repeated tool calls (same tool + same args >2 times in a row) ---
+        current_call = {"tool_name": tool_name, "args": args}
+        ep.recent_tool_calls.append(current_call)
+        # Keep only the last 3 entries to check for 3-in-a-row
+        if len(ep.recent_tool_calls) > 3:
+            ep.recent_tool_calls = ep.recent_tool_calls[-3:]
+        # Penalize if the last 3 calls are identical (i.e., >2 in a row)
+        if len(ep.recent_tool_calls) >= 3:
+            last_three = ep.recent_tool_calls[-3:]
+            if (last_three[0] == last_three[1] == last_three[2]):
+                reward += REWARD_REPEATED_CALL
+                reason += " | Penalty: same tool called >2 times in a row with identical arguments"
 
         # --- Check termination ---
         all_booked = len(ep.bookings) >= len(ep.passengers)
