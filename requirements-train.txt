@@ -1,6 +1,6 @@
 trl>=0.17.0
 unsloth
-vllm>=0.11.0
+vllm
 peft
 transformers
 datasets
