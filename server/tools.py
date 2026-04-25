@@ -7,13 +7,16 @@ The EpisodeState is expected to have:
     ep.passengers              Dict[str, dict]  passenger_id -> full record
     ep.flights                 Dict[str, dict]  flight_id -> full record
     ep.groups                  Dict[str, List[str]]  group_id -> [passenger_ids]
-    ep.bookings                Dict[str, dict]  passenger_id -> {flight_id, cabin}
+    ep.bookings                Dict[str, dict]  passenger_id -> {flight_id, cabin, cost}
     ep.flight_availability     Dict[str, Dict[str, int]]  flight_id -> {cabin: count}
     ep.passenger_details_fetched  Set[str]  passenger_ids whose details have been fetched
     ep.info_calls              Dict[str, int]  tool_name -> call count
     ep.last_booking_step       int
     ep.step_count              int
     ep.done                    bool
+    ep.total_cost              float  accumulated cost
+    ep.compensation_budget     float  remaining budget
+    ep.cancelled_flights       Set[str]  flights removed by secondary cancellation
 
 All functions return a dict with a "status" key ("success" or "error").
 On error, a "message" key describes what went wrong.
@@ -29,6 +32,32 @@ if TYPE_CHECKING:
 
 VALID_CABINS = {"economy", "premium_economy", "business"}
 
+# Cabin ordering for upgrade/downgrade detection and cost computation
+CABIN_RANK = {"economy": 0, "premium_economy": 1, "business": 2}
+
+# Cost tables
+UPGRADE_COST = {
+    ("economy", "premium_economy"): 200,
+    ("economy", "business"): 800,
+    ("premium_economy", "business"): 500,
+}
+DOWNGRADE_COMPENSATION = {
+    ("business", "premium_economy"): 400,
+    ("business", "economy"): 700,
+    ("premium_economy", "economy"): 200,
+}
+
+# Loyalty-based compensation entitlements
+LOYALTY_COMPENSATION = {
+    "gold": {"lounge_access": 40, "meal_voucher": 25, "priority_rebooking": 0},
+    "silver": {"meal_voucher": 25},
+    "none": {},
+}
+
+# If passenger waits > this many minutes beyond original departure, hotel entitled
+HOTEL_WAIT_THRESHOLD_MINUTES = 240
+HOTEL_COST = 150
+
 
 # ---------------------------------------------------------------------------
 # Time helpers
@@ -43,6 +72,40 @@ def parse_time(t: str) -> int:
 def meets_deadline(arrival_time: str, deadline: str) -> bool:
     """True if flight arrives at or before the deadline."""
     return parse_time(arrival_time) <= parse_time(deadline)
+
+
+def _cabin_rank(cabin: str) -> int:
+    return CABIN_RANK.get(cabin, 0)
+
+
+# ---------------------------------------------------------------------------
+# Cost computation helpers
+# ---------------------------------------------------------------------------
+
+def compute_booking_cost(original_cabin: str, assigned_cabin: str, pax: dict) -> float:
+    """
+    Compute the cost of a booking based on cabin change and loyalty entitlements.
+    Upgrades cost the airline money; downgrades require compensation.
+    Loyalty status triggers additional compensation.
+    """
+    cost = 0.0
+
+    orig_rank = _cabin_rank(original_cabin)
+    new_rank = _cabin_rank(assigned_cabin)
+
+    if new_rank > orig_rank:
+        # Upgrade cost
+        cost += UPGRADE_COST.get((original_cabin, assigned_cabin), 0)
+    elif new_rank < orig_rank:
+        # Downgrade compensation owed to passenger
+        cost += DOWNGRADE_COMPENSATION.get((original_cabin, assigned_cabin), 0)
+
+        # Loyalty-based compensation for downgrades
+        loyalty = pax.get("loyalty_status", "none")
+        entitlements = LOYALTY_COMPENSATION.get(loyalty, {})
+        cost += sum(entitlements.values())
+
+    return cost
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +124,7 @@ def tool_list_passengers(ep) -> dict:
             "group_id": pax["group_id"],
             "has_ssr": len(pax["ssr_flags"]) > 0,
             "has_deadline": pax["downstream_deadline"] is not None,
+            "loyalty_status": pax.get("loyalty_status", "none"),
             "booked": pid in ep.bookings,
         })
 
@@ -93,6 +157,9 @@ def tool_get_passenger_details(ep, passenger_id: str) -> dict:
         "group_size": pax["group_size"],
         "ssr_flags": pax["ssr_flags"],
         "downstream_deadline": pax["downstream_deadline"],
+        "loyalty_status": pax.get("loyalty_status", "none"),
+        "paid_window": pax.get("paid_window", False),
+        "paid_legroom": pax.get("paid_legroom", False),
     }
 
     if passenger_id in ep.bookings:
@@ -100,6 +167,7 @@ def tool_get_passenger_details(ep, passenger_id: str) -> dict:
         result["current_booking"] = {
             "flight_id": booking["flight_id"],
             "cabin": booking["cabin"],
+            "cost": booking.get("cost", 0.0),
         }
 
     return result
@@ -110,13 +178,17 @@ def tool_get_passenger_details(ep, passenger_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def tool_list_alternative_flights(ep) -> dict:
-    """Return all alternative flights with current availability."""
+    """Return all active alternative flights with current availability."""
     ep.info_calls["list_alternative_flights"] = (
         ep.info_calls.get("list_alternative_flights", 0) + 1
     )
 
+    cancelled = getattr(ep, "cancelled_flights", set())
+
     flights_list = []
     for fid, fl in ep.flights.items():
+        if fid in cancelled:
+            continue
         flights_list.append({
             "flight_id": fid,
             "departure_time": fl["departure_time"],
@@ -137,6 +209,13 @@ def tool_get_flight_details(ep, flight_id: str) -> dict:
     ep.info_calls["get_flight_details"] = (
         ep.info_calls.get("get_flight_details", 0) + 1
     )
+
+    cancelled = getattr(ep, "cancelled_flights", set())
+    if flight_id in cancelled:
+        return {
+            "status": "error",
+            "message": f"Flight {flight_id} has been cancelled",
+        }
 
     if flight_id not in ep.flights:
         return {
@@ -166,14 +245,14 @@ def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> di
     Validation chain:
     1. Passenger exists
     2. Passenger not already booked
-    3. Flight exists
+    3. Flight exists and not cancelled
     4. Cabin is valid
     5. Cabin has availability > 0
     6. Flight supports all of passenger's SSR flags
     7. If downstream_deadline, arrival_time <= deadline
     8. If hard group member, warn (should use book_group)
 
-    On success: decrements availability, adds to bookings.
+    On success: decrements availability, adds to bookings, computes cost.
     """
     # 1. Passenger exists
     if passenger_id not in ep.passengers:
@@ -193,7 +272,13 @@ def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> di
             ),
         }
 
-    # 3. Flight exists
+    # 3. Flight exists and not cancelled
+    cancelled = getattr(ep, "cancelled_flights", set())
+    if flight_id in cancelled:
+        return {
+            "status": "error",
+            "message": f"Flight {flight_id} has been cancelled",
+        }
     if flight_id not in ep.flights:
         return {
             "status": "error",
@@ -255,10 +340,18 @@ def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> di
             f"Consider using book_group to keep the group together."
         )
 
+    # --- Compute cost ---
+    booking_cost = compute_booking_cost(pax["original_cabin"], cabin, pax)
+
     # --- Commit booking ---
     ep.flight_availability[flight_id][cabin] -= 1
-    ep.bookings[passenger_id] = {"flight_id": flight_id, "cabin": cabin}
+    ep.bookings[passenger_id] = {
+        "flight_id": flight_id,
+        "cabin": cabin,
+        "cost": booking_cost,
+    }
     ep.last_booking_step = ep.step_count
+    ep.total_cost = getattr(ep, "total_cost", 0.0) + booking_cost
 
     cabin_match = pax["original_cabin"] == cabin
 
@@ -269,6 +362,7 @@ def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> di
         "cabin": cabin,
         "cabin_match": cabin_match,
         "original_cabin": pax["original_cabin"],
+        "booking_cost": booking_cost,
     }
     if deadline_met is not None:
         result["deadline_met"] = deadline_met
@@ -296,7 +390,7 @@ def tool_book_group(
     Validation chain:
     1. Group exists
     2. All group members present in cabin_assignments and none already booked
-    3. Flight exists
+    3. Flight exists and not cancelled
     4. All cabins valid
     5. Sufficient capacity for all members
     6. Flight supports SSR flags of all group members
@@ -338,7 +432,13 @@ def tool_book_group(
                 ),
             }
 
-    # 3. Flight exists
+    # 3. Flight exists and not cancelled
+    cancelled = getattr(ep, "cancelled_flights", set())
+    if flight_id in cancelled:
+        return {
+            "status": "error",
+            "message": f"Flight {flight_id} has been cancelled",
+        }
     if flight_id not in ep.flights:
         return {
             "status": "error",
@@ -407,29 +507,99 @@ def tool_book_group(
 
     # --- Commit all bookings atomically ---
     booked = []
+    total_group_cost = 0.0
     for pid, cabin in cabin_assignments.items():
-        ep.flight_availability[flight_id][cabin] -= 1
-        ep.bookings[pid] = {"flight_id": flight_id, "cabin": cabin}
         pax = ep.passengers[pid]
+        booking_cost = compute_booking_cost(pax["original_cabin"], cabin, pax)
+        total_group_cost += booking_cost
+
+        ep.flight_availability[flight_id][cabin] -= 1
+        ep.bookings[pid] = {
+            "flight_id": flight_id,
+            "cabin": cabin,
+            "cost": booking_cost,
+        }
         booked.append({
             "passenger_id": pid,
             "cabin": cabin,
             "cabin_match": pax["original_cabin"] == cabin,
             "original_cabin": pax["original_cabin"],
+            "booking_cost": booking_cost,
         })
 
     ep.last_booking_step = ep.step_count
+    ep.total_cost = getattr(ep, "total_cost", 0.0) + total_group_cost
 
     return {
         "status": "success",
         "group_id": group_id,
         "flight_id": flight_id,
         "booked": booked,
+        "total_group_cost": total_group_cost,
     }
 
 
 # ---------------------------------------------------------------------------
-# Tool 7: finalize_plan
+# Tool 7: unbook_passenger
+# ---------------------------------------------------------------------------
+
+def tool_unbook_passenger(ep, passenger_id: str) -> dict:
+    """
+    Remove an existing booking, freeing the seat back to inventory.
+
+    This incurs a disruption cost and returns the freed seat.
+    Use when a mid-episode event invalidates a booking, or to make room
+    for a higher-priority passenger.
+    """
+    if passenger_id not in ep.passengers:
+        return {
+            "status": "error",
+            "message": f"Passenger {passenger_id} does not exist",
+        }
+
+    if passenger_id not in ep.bookings:
+        return {
+            "status": "error",
+            "message": f"Passenger {passenger_id} is not currently booked",
+        }
+
+    booking = ep.bookings[passenger_id]
+    flight_id = booking["flight_id"]
+    cabin = booking["cabin"]
+    original_cost = booking.get("cost", 0.0)
+
+    cancelled = getattr(ep, "cancelled_flights", set())
+
+    # Return the seat to inventory (only if the flight still exists)
+    if flight_id not in cancelled and flight_id in ep.flight_availability:
+        ep.flight_availability[flight_id][cabin] = (
+            ep.flight_availability[flight_id].get(cabin, 0) + 1
+        )
+
+    # Remove booking
+    del ep.bookings[passenger_id]
+
+    # Reverse the original cost
+    ep.total_cost = getattr(ep, "total_cost", 0.0) - original_cost
+
+    # Track unbookings for reward computation
+    ep.unbook_count = getattr(ep, "unbook_count", 0) + 1
+
+    return {
+        "status": "success",
+        "passenger_id": passenger_id,
+        "freed_flight": flight_id,
+        "freed_cabin": cabin,
+        "cost_reversed": original_cost,
+        "message": (
+            f"Unbooked {passenger_id} from {flight_id} {cabin}. "
+            f"Seat returned to inventory."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 8: finalize_plan
 # ---------------------------------------------------------------------------
 
 def tool_finalize_plan(ep) -> dict:

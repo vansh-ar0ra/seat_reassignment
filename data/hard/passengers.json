@@ -10,6 +10,7 @@
             "group_size": 2,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "gold",
             "paid_window": true,
             "paid_legroom": true
         },
@@ -23,6 +24,7 @@
             "group_size": 2,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "gold",
             "paid_window": true,
             "paid_legroom": false
         },
@@ -36,6 +38,7 @@
             "group_size": null,
             "ssr_flags": ["UM"],
             "downstream_deadline": "15:00",
+            "loyalty_status": "gold",
             "paid_window": false,
             "paid_legroom": true
         },
@@ -49,6 +52,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "silver",
             "paid_window": true,
             "paid_legroom": false
         },
@@ -62,6 +66,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "silver",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -75,6 +80,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -88,6 +94,7 @@
             "group_size": 2,
             "ssr_flags": ["WCHR"],
             "downstream_deadline": null,
+            "loyalty_status": "silver",
             "paid_window": false,
             "paid_legroom": true
         },
@@ -101,6 +108,7 @@
             "group_size": 2,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -114,6 +122,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": "14:00",
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -127,6 +136,7 @@
             "group_size": null,
             "ssr_flags": ["pet_cabin"],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -140,6 +150,7 @@
             "group_size": 3,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "silver",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -153,6 +164,7 @@
             "group_size": 3,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": true,
             "paid_legroom": false
         },
@@ -166,6 +178,7 @@
             "group_size": 3,
             "ssr_flags": ["WCHR"],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -179,6 +192,7 @@
             "group_size": 3,
             "ssr_flags": [],
             "downstream_deadline": "13:00",
+            "loyalty_status": "gold",
             "paid_window": false,
             "paid_legroom": true
         },
@@ -192,6 +206,7 @@
             "group_size": 3,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -205,6 +220,7 @@
             "group_size": 3,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -218,6 +234,7 @@
             "group_size": null,
             "ssr_flags": ["pet_cargo"],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -231,6 +248,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": "16:00",
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -244,6 +262,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": true,
             "paid_legroom": true
         },
@@ -257,6 +276,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -270,6 +290,7 @@
             "group_size": null,
             "ssr_flags": ["UM"],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -283,6 +304,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -296,6 +318,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": "15:00",
+            "loyalty_status": "silver",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -309,6 +332,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         },
@@ -322,6 +346,7 @@
             "group_size": null,
             "ssr_flags": [],
             "downstream_deadline": null,
+            "loyalty_status": "none",
             "paid_window": false,
             "paid_legroom": false
         }

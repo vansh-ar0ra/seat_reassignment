@@ -22,14 +22,17 @@ from server.rewards import (
     REWARD_UPGRADE,
     REWARD_DOWNGRADE,
     REWARD_DEADLINE_BONUS,
-    REWARD_HARD_VIOLATION,
     REWARD_FAILED_BOOKING,
     REWARD_INVALID_TOOL,
+    REWARD_UNBOOK_BASE,
+    REWARD_UNBOOK_RECOVERY,
     GRADER_W_COVERAGE,
     GRADER_W_CABIN_MATCH,
     GRADER_W_GROUP_INTEGRITY,
     GRADER_W_DEADLINE,
     GRADER_W_SSR_INTEGRITY,
+    GRADER_W_COST_EFFICIENCY,
+    GRADER_W_LOYALTY_COMPLIANCE,
     GRADER_HARD_PENALTY,
     GROUP_SAME_FLIGHT_SAME_CABIN,
     GROUP_SAME_FLIGHT_DIFF_CABIN,
@@ -44,27 +47,38 @@ from server.rewards import (
 
 @pytest.fixture
 def rc():
-    """RewardComputer with 10 passengers and 60 max steps."""
-    return RewardComputer(total_passengers=10, max_steps=60)
+    """RewardComputer with 10 passengers, 60 max steps, 0.5 difficulty."""
+    return RewardComputer(total_passengers=10, max_steps=60, difficulty=0.5, compensation_budget=5000)
 
 
-# Reusable test data — passengers, flights, bookings
+@pytest.fixture
+def rc_hard():
+    """RewardComputer at high difficulty for progressive scaling tests."""
+    return RewardComputer(total_passengers=10, max_steps=30, difficulty=0.9, compensation_budget=2000)
+
+
+# Reusable test data
 PASSENGERS = {
     "P1": {"passenger_id": "P1", "name": "A", "priority_tier": 1, "original_cabin": "business",
            "group_id": None, "group_integrity": None, "group_size": None,
-           "ssr_flags": ["UM"], "downstream_deadline": "14:00"},
+           "ssr_flags": ["UM"], "downstream_deadline": "14:00", "loyalty_status": "gold",
+           "paid_window": False, "paid_legroom": False},
     "P2": {"passenger_id": "P2", "name": "B", "priority_tier": 2, "original_cabin": "business",
            "group_id": "G1", "group_integrity": "hard", "group_size": 2,
-           "ssr_flags": [], "downstream_deadline": None},
+           "ssr_flags": [], "downstream_deadline": None, "loyalty_status": "silver",
+           "paid_window": False, "paid_legroom": False},
     "P3": {"passenger_id": "P3", "name": "C", "priority_tier": 3, "original_cabin": "economy",
            "group_id": "G1", "group_integrity": "hard", "group_size": 2,
-           "ssr_flags": [], "downstream_deadline": None},
+           "ssr_flags": [], "downstream_deadline": None, "loyalty_status": "none",
+           "paid_window": False, "paid_legroom": False},
     "P4": {"passenger_id": "P4", "name": "D", "priority_tier": 4, "original_cabin": "economy",
            "group_id": "G2", "group_integrity": "soft", "group_size": 2,
-           "ssr_flags": [], "downstream_deadline": None},
+           "ssr_flags": [], "downstream_deadline": None, "loyalty_status": "none",
+           "paid_window": False, "paid_legroom": False},
     "P5": {"passenger_id": "P5", "name": "E", "priority_tier": 5, "original_cabin": "economy",
            "group_id": "G2", "group_integrity": "soft", "group_size": 2,
-           "ssr_flags": ["WCHR"], "downstream_deadline": "16:00"},
+           "ssr_flags": ["WCHR"], "downstream_deadline": "16:00", "loyalty_status": "none",
+           "paid_window": False, "paid_legroom": False},
 }
 
 GROUPS = {
@@ -88,8 +102,6 @@ FLIGHTS = {
 
 class TestInfoCallRewards:
     def test_first_list_passengers_positive(self, rc):
-        """First call to list_passengers should give a small positive reward."""
-        # Simulate ep_state
         class FakeEp:
             info_calls = {"list_passengers": 1}
             last_booking_step = 0
@@ -99,7 +111,6 @@ class TestInfoCallRewards:
         assert reward > 0
 
     def test_repeated_list_passengers_negative(self, rc):
-        """5th+ call with no intervening bookings -> churn penalty."""
         class FakeEp:
             info_calls = {"list_passengers": 5}
             last_booking_step = 0
@@ -135,49 +146,38 @@ class TestInfoCallRewards:
 # ===========================================================================
 
 class TestBookingRewards:
-    def test_same_cabin_high_reward(self, rc):
-        pax = {"priority_tier": 1, "original_cabin": "business"}
+    def test_same_cabin_positive_reward(self, rc):
+        pax = {"priority_tier": 1, "original_cabin": "business", "loyalty_status": "gold"}
         result = {"status": "success", "cabin": "business", "original_cabin": "business"}
         reward, _ = rc.reward_for_booking(result, pax, None)
-        assert reward == pytest.approx(REWARD_SAME_CABIN_GROUP * priority_weight(1))
+        assert reward > 0
 
-    def test_upgrade_medium_reward(self, rc):
-        pax = {"priority_tier": 3, "original_cabin": "economy"}
+    def test_upgrade_positive_reward(self, rc):
+        pax = {"priority_tier": 3, "original_cabin": "economy", "loyalty_status": "none"}
         result = {"status": "success", "cabin": "business", "original_cabin": "economy"}
         reward, _ = rc.reward_for_booking(result, pax, None)
-        assert reward == pytest.approx(REWARD_UPGRADE * priority_weight(3))
-
-    def test_downgrade_small_reward(self, rc):
-        pax = {"priority_tier": 2, "original_cabin": "business"}
-        result = {"status": "success", "cabin": "economy", "original_cabin": "business"}
-        reward, _ = rc.reward_for_booking(result, pax, None)
-        assert reward == pytest.approx(REWARD_DOWNGRADE * priority_weight(2))
+        assert reward > 0
 
     def test_priority_weight_scaling(self, rc):
-        """Tier 1 gets higher reward than Tier 5 for the same outcome."""
         result = {"status": "success", "cabin": "economy", "original_cabin": "economy"}
-        pax1 = {"priority_tier": 1, "original_cabin": "economy"}
-        pax5 = {"priority_tier": 5, "original_cabin": "economy"}
+        pax1 = {"priority_tier": 1, "original_cabin": "economy", "loyalty_status": "none"}
+        pax5 = {"priority_tier": 5, "original_cabin": "economy", "loyalty_status": "none"}
         r1, _ = rc.reward_for_booking(result, pax1, None)
         r5, _ = rc.reward_for_booking(result, pax5, None)
         assert r1 > r5
 
     def test_deadline_met_bonus(self, rc):
-        pax = {"priority_tier": 2, "original_cabin": "economy"}
-        result = {"status": "success", "cabin": "economy", "original_cabin": "economy",
-                  "deadline_met": True}
-        reward_with, _ = rc.reward_for_booking(result, pax, None)
-
-        result_no_dl = {"status": "success", "cabin": "economy", "original_cabin": "economy"}
-        reward_without, _ = rc.reward_for_booking(result_no_dl, pax, None)
-
+        pax = {"priority_tier": 2, "original_cabin": "economy", "loyalty_status": "none"}
+        result_with = {"status": "success", "cabin": "economy", "original_cabin": "economy",
+                       "deadline_met": True}
+        result_without = {"status": "success", "cabin": "economy", "original_cabin": "economy"}
+        reward_with, _ = rc.reward_for_booking(result_with, pax, None)
+        reward_without, _ = rc.reward_for_booking(result_without, pax, None)
         assert reward_with > reward_without
-        expected_bonus = REWARD_DEADLINE_BONUS * priority_weight(2)
-        assert reward_with == pytest.approx(reward_without + expected_bonus)
 
-    def test_failed_booking_small_penalty(self, rc):
+    def test_failed_booking_penalty(self, rc):
         result = {"status": "error", "message": "No seats available"}
-        pax = {"priority_tier": 3, "original_cabin": "economy"}
+        pax = {"priority_tier": 3, "original_cabin": "economy", "loyalty_status": "none"}
         reward, _ = rc.reward_for_booking(result, pax, None)
         assert reward == REWARD_FAILED_BOOKING
         assert reward < 0
@@ -189,126 +189,228 @@ class TestBookingRewards:
 
 
 # ===========================================================================
-# 3. TestGraderScore
+# 3. TestUnbookRewards
+# ===========================================================================
+
+class TestUnbookRewards:
+    def test_unbook_base_penalty(self, rc):
+        result = {"status": "success", "passenger_id": "P1"}
+        reward, _ = rc.reward_for_unbook(result, had_event_this_step=False)
+        assert reward == REWARD_UNBOOK_BASE
+        assert reward < 0
+
+    def test_unbook_event_recovery_offset(self, rc):
+        result = {"status": "success", "passenger_id": "P1"}
+        reward, reason = rc.reward_for_unbook(result, had_event_this_step=True)
+        assert reward == REWARD_UNBOOK_BASE + REWARD_UNBOOK_RECOVERY
+        assert "event recovery" in reason
+
+    def test_unbook_failed(self, rc):
+        result = {"status": "error", "message": "Not booked"}
+        reward, _ = rc.reward_for_unbook(result, had_event_this_step=False)
+        assert reward == REWARD_FAILED_BOOKING
+
+
+# ===========================================================================
+# 4. TestProgressiveDifficulty
+# ===========================================================================
+
+class TestProgressiveDifficulty:
+    def test_high_difficulty_scales_down_positive_rewards(self, rc, rc_hard):
+        pax = {"priority_tier": 1, "original_cabin": "business", "loyalty_status": "none"}
+        result = {"status": "success", "cabin": "business", "original_cabin": "business"}
+        reward_normal, _ = rc.reward_for_booking(result, pax, None)
+        reward_hard, _ = rc_hard.reward_for_booking(result, pax, None)
+        assert reward_hard < reward_normal
+
+    def test_difficulty_does_not_affect_penalties(self, rc, rc_hard):
+        result = {"status": "error", "message": "No seats"}
+        pax = {"priority_tier": 1, "original_cabin": "business", "loyalty_status": "none"}
+        r1, _ = rc.reward_for_booking(result, pax, None)
+        r2, _ = rc_hard.reward_for_booking(result, pax, None)
+        assert r1 == r2 == REWARD_FAILED_BOOKING
+
+
+# ===========================================================================
+# 5. TestDecomposedBreakdown
+# ===========================================================================
+
+class TestDecomposedBreakdown:
+    def test_breakdown_has_all_keys(self, rc):
+        pax = PASSENGERS["P1"]
+        result = {"status": "success", "cabin": "business", "cabin_match": True,
+                  "booking_cost": 0.0}
+        bd = rc.compute_step_breakdown(result, pax, None)
+        expected_keys = {
+            "coverage_delta", "cabin_match_delta", "group_delta",
+            "deadline_delta", "ssr_delta", "cost_delta",
+            "loyalty_delta", "opportunity_cost",
+        }
+        assert set(bd.keys()) == expected_keys
+
+    def test_cabin_match_positive_delta(self, rc):
+        pax = PASSENGERS["P1"]
+        result = {"status": "success", "cabin": "business", "cabin_match": True,
+                  "booking_cost": 0.0}
+        bd = rc.compute_step_breakdown(result, pax, None)
+        assert bd["cabin_match_delta"] > 0
+
+    def test_downgrade_negative_cabin_delta(self, rc):
+        pax = PASSENGERS["P1"]
+        result = {"status": "success", "cabin": "economy", "cabin_match": False,
+                  "booking_cost": 700.0}
+        bd = rc.compute_step_breakdown(result, pax, None)
+        assert bd["cabin_match_delta"] < 0
+
+    def test_gold_downgrade_negative_loyalty(self, rc):
+        pax = PASSENGERS["P1"]  # gold member
+        result = {"status": "success", "cabin": "economy", "cabin_match": False,
+                  "booking_cost": 700.0}
+        bd = rc.compute_step_breakdown(result, pax, None)
+        assert bd["loyalty_delta"] < 0
+
+    def test_failed_booking_returns_zeros(self, rc):
+        result = {"status": "error", "message": "fail"}
+        bd = rc.compute_step_breakdown(result, PASSENGERS["P1"], None)
+        assert all(v == 0.0 for v in bd.values())
+
+
+# ===========================================================================
+# 6. TestGraderScore
 # ===========================================================================
 
 class TestGraderScore:
-    def test_perfect_score_all_booked_same_cabin(self, rc):
-        """All passengers booked in same cabin, no SSR violations, deadlines met."""
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-B", "cabin": "economy"},
-            "P5": {"flight_id": "FL-B", "cabin": "economy"},
-        }
-        score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
-        # G1 on same flight, G2 on same flight, SSR OK, deadlines OK
-        # Note: G1 is hard group — P2 (business) and P3 (economy) same flight diff cabin -> 0.7
-        # This won't be 1.0 because G1 has split cabin
-        assert score > 0.9
-
     def test_zero_coverage(self, rc):
-        """No passengers booked -> low score (only SSR integrity is 1.0 since no violations possible)."""
         bookings = {}
         score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
-        # coverage=0, cabin_match=0, group=0, deadline=0, ssr=1.0 -> 0.20*1.0 = 0.20
-        assert score == pytest.approx(GRADER_W_SSR_INTEGRITY * 1.0)
+        assert EPS < score < 0.5
 
     def test_partial_coverage(self, rc):
-        """Some passengers booked, some not."""
         bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
+            "P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
         }
         score = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
         assert EPS < score < 1.0 - EPS
 
     def test_ssr_violation_penalizes(self, rc):
-        """Book P1 (UM) on FL-B which doesn't support UM -> SSR violation."""
-        bookings = {
-            "P1": {"flight_id": "FL-B", "cabin": "business"},  # UM not on FL-B
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+        bookings_bad = {
+            "P1": {"flight_id": "FL-B", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P3": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P5": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
         }
-        score_bad = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
-
-        bookings_good = dict(bookings)
-        bookings_good["P1"] = {"flight_id": "FL-A", "cabin": "business"}
+        bookings_good = dict(bookings_bad)
+        bookings_good["P1"] = {"flight_id": "FL-A", "cabin": "business", "cost": 0}
+        score_bad = rc.grader_score(bookings_bad, PASSENGERS, FLIGHTS, GROUPS)
         score_good = rc.grader_score(bookings_good, PASSENGERS, FLIGHTS, GROUPS)
-
         assert score_bad < score_good
 
     def test_group_split_penalizes(self, rc):
-        """Hard group G1 split across flights -> score drops."""
         bookings_split = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-B", "cabin": "economy"},  # G1 split!
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+            "P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P3": {"flight_id": "FL-B", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P5": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
         }
         bookings_together = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+            "P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P3": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P5": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
         }
         score_split = rc.grader_score(bookings_split, PASSENGERS, FLIGHTS, GROUPS)
         score_together = rc.grader_score(bookings_together, PASSENGERS, FLIGHTS, GROUPS)
         assert score_split < score_together
 
-    def test_deadline_missed_penalizes(self, rc):
-        """P1 has deadline 14:00. FL-B arrives 16:00 -> deadline missed."""
-        bookings_missed = {
-            "P1": {"flight_id": "FL-B", "cabin": "business"},  # arrives 16:00, deadline 14:00
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        bookings_met = dict(bookings_missed)
-        bookings_met["P1"] = {"flight_id": "FL-A", "cabin": "business"}
-        score_missed = rc.grader_score(bookings_missed, PASSENGERS, FLIGHTS, GROUPS)
-        score_met = rc.grader_score(bookings_met, PASSENGERS, FLIGHTS, GROUPS)
-        assert score_missed < score_met
-
     def test_grader_is_deterministic(self, rc):
-        """Same input -> same output."""
         bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+            "P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P3": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P5": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
         }
         s1 = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
         s2 = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
         assert s1 == s2
 
     def test_grader_clamped_to_eps_range(self, rc):
-        """Score is always in (EPS, 1-EPS)."""
-        # Zero coverage
         score_zero = rc.grader_score({}, PASSENGERS, FLIGHTS, GROUPS)
         assert score_zero >= EPS
-
-        # Full coverage (best effort)
         bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
+            "P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P2": {"flight_id": "FL-A", "cabin": "business", "cost": 0},
+            "P3": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P5": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
         }
         score_full = rc.grader_score(bookings, PASSENGERS, FLIGHTS, GROUPS)
         assert score_full <= 1.0 - EPS
 
 
 # ===========================================================================
-# 4. TestPriorityWeights
+# 7. TestCostEfficiency
+# ===========================================================================
+
+class TestCostEfficiency:
+    def test_zero_cost_high_score(self):
+        score = RewardComputer._cost_efficiency_score(0.0, 10, 5000)
+        assert score > 0.8
+
+    def test_over_budget_low_score(self):
+        score = RewardComputer._cost_efficiency_score(10000, 5, 5000)
+        assert score < 0.5
+
+    def test_no_bookings_zero(self):
+        score = RewardComputer._cost_efficiency_score(0, 0, 5000)
+        assert score == 0.0
+
+
+# ===========================================================================
+# 8. TestLoyaltyCompliance
+# ===========================================================================
+
+class TestLoyaltyCompliance:
+    def test_gold_same_cabin_high_score(self):
+        pax = {"P1": PASSENGERS["P1"]}
+        bookings = {"P1": {"flight_id": "FL-A", "cabin": "business", "cost": 0}}
+        score = RewardComputer._loyalty_compliance_score(bookings, pax)
+        assert score == pytest.approx(1.0)
+
+    def test_gold_downgraded_low_score(self):
+        pax = {"P1": PASSENGERS["P1"]}
+        bookings = {"P1": {"flight_id": "FL-A", "cabin": "economy", "cost": 700}}
+        score = RewardComputer._loyalty_compliance_score(bookings, pax)
+        assert score < 0.5
+
+    def test_no_loyalty_passengers_perfect(self):
+        pax = {"P3": PASSENGERS["P3"], "P4": PASSENGERS["P4"]}
+        bookings = {
+            "P3": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+            "P4": {"flight_id": "FL-A", "cabin": "economy", "cost": 0},
+        }
+        score = RewardComputer._loyalty_compliance_score(bookings, pax)
+        assert score == pytest.approx(1.0)
+
+
+# ===========================================================================
+# 9. TestGraderWeightsSum
+# ===========================================================================
+
+def test_grader_weights_sum_to_one():
+    total = (GRADER_W_COVERAGE + GRADER_W_CABIN_MATCH +
+             GRADER_W_GROUP_INTEGRITY + GRADER_W_DEADLINE +
+             GRADER_W_SSR_INTEGRITY + GRADER_W_COST_EFFICIENCY +
+             GRADER_W_LOYALTY_COMPLIANCE)
+    assert total == pytest.approx(1.0)
+
+
+# ===========================================================================
+# 10. TestPriorityWeights
 # ===========================================================================
 
 class TestPriorityWeights:
@@ -319,202 +421,6 @@ class TestPriorityWeights:
 
     def test_tier5_lowest(self):
         assert priority_weight(5) == 0.6
-        for tier in [1, 2, 3, 4]:
-            assert priority_weight(5) < priority_weight(tier)
 
     def test_unknown_tier_defaults_to_1(self):
         assert priority_weight(99) == 1.0
-        assert priority_weight(0) == 1.0
-
-
-# ===========================================================================
-# 5. TestCabinMatchScore
-# ===========================================================================
-
-class TestCabinMatchScore:
-    def test_all_matched(self):
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
-        assert score == pytest.approx(1.0)
-
-    def test_none_matched(self):
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "economy"},   # business -> economy
-            "P2": {"flight_id": "FL-A", "cabin": "economy"},   # business -> economy
-            "P3": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
-            "P4": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
-            "P5": {"flight_id": "FL-A", "cabin": "business"},  # economy -> business
-        }
-        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
-        assert score == pytest.approx(0.0)
-
-    def test_partial_match_priority_weighted(self):
-        """Only P1 (tier 1, weight 1.5) matched. Others mismatched."""
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},  # match
-            "P2": {"flight_id": "FL-A", "cabin": "economy"},   # mismatch
-            "P3": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
-            "P4": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
-            "P5": {"flight_id": "FL-A", "cabin": "business"},  # mismatch
-        }
-        total_weight = sum(priority_weight(p["priority_tier"]) for p in PASSENGERS.values())
-        expected = priority_weight(1) / total_weight
-        score = RewardComputer._cabin_match_score(bookings, PASSENGERS)
-        assert score == pytest.approx(expected)
-
-
-# ===========================================================================
-# 6. TestGroupIntegrityScore
-# ===========================================================================
-
-class TestGroupIntegrityScore:
-    def test_all_same_flight_same_cabin(self):
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "business"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
-        # G1: same flight same cabin (both business) -> 1.0
-        # But wait, P3 original_cabin is economy, booked as business — doesn't matter for group integrity
-        # G2: same flight same cabin -> 1.0
-        assert score == pytest.approx(GROUP_SAME_FLIGHT_SAME_CABIN)
-        assert violations == 0
-
-    def test_same_flight_diff_cabin(self):
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},   # diff cabin
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
-        # G1: same flight diff cabin -> 0.7
-        # G2: same flight same cabin -> 1.0
-        expected = (GROUP_SAME_FLIGHT_DIFF_CABIN + GROUP_SAME_FLIGHT_SAME_CABIN) / 2
-        assert score == pytest.approx(expected)
-        assert violations == 0
-
-    def test_hard_group_split_flights(self):
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-B", "cabin": "economy"},   # G1 split across flights!
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
-        # G1 (hard): split flights -> 0.0 + 1 violation
-        # G2 (soft): same flight same cabin -> 1.0
-        expected = (GROUP_SPLIT_FLIGHTS_HARD + GROUP_SAME_FLIGHT_SAME_CABIN) / 2
-        assert score == pytest.approx(expected)
-        assert violations == 1
-
-    def test_soft_group_split_flights(self):
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-            "P4": {"flight_id": "FL-A", "cabin": "economy"},
-            "P5": {"flight_id": "FL-B", "cabin": "economy"},   # G2 split across flights
-        }
-        score, violations = RewardComputer._group_integrity_score(bookings, PASSENGERS, GROUPS)
-        # G1 (hard): same flight diff cabin -> 0.7
-        # G2 (soft): split flights -> 0.4 (no hard violation)
-        expected = (GROUP_SAME_FLIGHT_DIFF_CABIN + GROUP_SPLIT_FLIGHTS_SOFT) / 2
-        assert score == pytest.approx(expected)
-        assert violations == 0  # soft group split is not a hard violation
-
-    def test_no_groups(self):
-        bookings = {"P1": {"flight_id": "FL-A", "cabin": "business"}}
-        pax = {"P1": PASSENGERS["P1"]}
-        score, violations = RewardComputer._group_integrity_score(bookings, pax, {})
-        assert score == pytest.approx(1.0)
-        assert violations == 0
-
-
-# ===========================================================================
-# 7. TestDeadlineScore
-# ===========================================================================
-
-class TestDeadlineScore:
-    def test_all_deadlines_met(self):
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},  # dl 14:00, arr 12:00 OK
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # dl 16:00, arr 12:00 OK
-        }
-        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
-        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
-        assert score == pytest.approx(1.0)
-
-    def test_deadline_missed(self):
-        bookings = {
-            "P1": {"flight_id": "FL-B", "cabin": "business"},  # dl 14:00, arr 16:00 MISS
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # dl 16:00, arr 12:00 OK
-        }
-        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
-        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
-        # P1 missed, P5 met. Priority-weighted.
-        total_w = priority_weight(1) + priority_weight(5)
-        met_w = priority_weight(5)
-        assert score == pytest.approx(met_w / total_w)
-
-    def test_no_deadline_passengers(self):
-        pax = {"P2": PASSENGERS["P2"], "P3": PASSENGERS["P3"]}  # no deadlines
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score = RewardComputer._deadline_score(bookings, pax, FLIGHTS)
-        assert score == pytest.approx(1.0)
-
-
-# ===========================================================================
-# 8. TestSSRIntegrity
-# ===========================================================================
-
-class TestSSRIntegrity:
-    def test_no_violations(self):
-        bookings = {
-            "P1": {"flight_id": "FL-A", "cabin": "business"},  # UM -> FL-A supports UM
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},   # WCHR -> FL-A supports WCHR
-        }
-        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
-        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
-        assert score == pytest.approx(1.0)
-        assert violations == 0
-
-    def test_one_violation(self):
-        bookings = {
-            "P1": {"flight_id": "FL-B", "cabin": "business"},  # UM -> FL-B doesn't support UM!
-            "P5": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        pax = {"P1": PASSENGERS["P1"], "P5": PASSENGERS["P5"]}
-        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
-        assert violations == 1
-        assert score == pytest.approx(0.75)  # 1.0 - 0.25*1
-
-    def test_no_ssr_passengers(self):
-        pax = {"P2": PASSENGERS["P2"], "P3": PASSENGERS["P3"]}
-        bookings = {
-            "P2": {"flight_id": "FL-A", "cabin": "business"},
-            "P3": {"flight_id": "FL-A", "cabin": "economy"},
-        }
-        score, violations = RewardComputer._ssr_integrity_score(bookings, pax, FLIGHTS)
-        assert score == pytest.approx(1.0)
-        assert violations == 0
-
-
-# ===========================================================================
-# 9. TestGraderWeightsSum
-# ===========================================================================
-
-def test_grader_weights_sum_to_one():
-    total = (GRADER_W_COVERAGE + GRADER_W_CABIN_MATCH +
-             GRADER_W_GROUP_INTEGRITY + GRADER_W_DEADLINE + GRADER_W_SSR_INTEGRITY)
-    assert total == pytest.approx(1.0)

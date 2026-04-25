@@ -18,7 +18,8 @@ class FlightRebookingAction(Action):
 
     Valid tool_name values:
         list_passengers, get_passenger_details, list_alternative_flights,
-        get_flight_details, book_passenger, book_group, finalize_plan.
+        get_flight_details, book_passenger, book_group, unbook_passenger,
+        finalize_plan.
     Any other value is routed to the invalid-tool handler inside step().
     """
 
@@ -27,7 +28,7 @@ class FlightRebookingAction(Action):
         description=(
             "Tool to call: list_passengers | get_passenger_details | "
             "list_alternative_flights | get_flight_details | "
-            "book_passenger | book_group | finalize_plan"
+            "book_passenger | book_group | unbook_passenger | finalize_plan"
         ),
     )
     args: Dict[str, Any] = Field(
@@ -86,6 +87,35 @@ class FlightRebookingObservation(Observation):
         ),
     )
 
+    # --- NEW: Decomposed reward breakdown ---
+    reward_breakdown: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-component reward breakdown for the last step: "
+            "coverage_delta, cabin_match_delta, group_delta, deadline_delta, "
+            "ssr_delta, cost_delta, loyalty_delta, opportunity_cost"
+        ),
+    )
+
+    # --- NEW: Mid-episode events ---
+    events: Optional[List[dict]] = Field(
+        default=None,
+        description=(
+            "Mid-episode events that fired on this step (capacity changes, "
+            "new passengers, SSR failures, deadline shifts, cancellations)"
+        ),
+    )
+
+    # --- NEW: Cost tracking ---
+    total_cost: float = Field(
+        default=0.0,
+        description="Total cost incurred so far (upgrades + compensation)",
+    )
+    compensation_budget: float = Field(
+        default=0.0,
+        description="Remaining compensation budget for this episode",
+    )
+
 
 class FlightRebookingState(State):
     """
@@ -99,3 +129,5 @@ class FlightRebookingState(State):
     passengers_remaining: int = Field(default=0)
     cumulative_reward: float = Field(default=0.0)
     is_complete: bool = Field(default=False)
+    total_cost: float = Field(default=0.0)
+    compensation_budget_remaining: float = Field(default=0.0)

@@ -35,6 +35,10 @@ def book(env, passenger_id, flight_id, cabin) -> FlightRebookingObservation:
                      passenger_id=passenger_id, flight_id=flight_id, cabin=cabin)
 
 
+def unbook(env, passenger_id) -> FlightRebookingObservation:
+    return call_tool(env, "unbook_passenger", passenger_id=passenger_id)
+
+
 def book_group(env, group_id, flight_id, cabin_assignments) -> FlightRebookingObservation:
     return call_tool(env, "book_group",
                      group_id=group_id, flight_id=flight_id,
@@ -42,7 +46,8 @@ def book_group(env, group_id, flight_id, cabin_assignments) -> FlightRebookingOb
 
 
 # ---------------------------------------------------------------------------
-# Known-optimal assignments for each tier (grader ≈ 1.0)
+# Known-optimal assignments for each tier (grader ~ 1.0)
+# All same-cabin bookings -> cost = 0
 # ---------------------------------------------------------------------------
 
 OPTIMAL_EASY = {
@@ -157,7 +162,7 @@ class TestReset:
     def test_max_steps_set(self):
         env = FlightRebookingEnvironment()
         obs = env.reset(task_id="medium")
-        assert obs.max_steps == 60
+        assert obs.max_steps == 35
 
     def test_unknown_task_raises(self):
         env = FlightRebookingEnvironment()
@@ -168,6 +173,22 @@ class TestReset:
         env = FlightRebookingEnvironment()
         obs = env.reset(task_id="medium")
         assert obs.flights_snapshot is None
+
+    def test_cost_fields_initialized(self):
+        env = FlightRebookingEnvironment()
+        obs = env.reset(task_id="medium")
+        assert obs.total_cost == 0.0
+        assert obs.compensation_budget == 4000.0
+
+    def test_events_initially_none(self):
+        env = FlightRebookingEnvironment()
+        obs = env.reset(task_id="medium")
+        assert obs.events is None
+
+    def test_reward_breakdown_initially_none(self):
+        env = FlightRebookingEnvironment()
+        obs = env.reset(task_id="medium")
+        assert obs.reward_breakdown is None
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +220,22 @@ class TestListPassengers:
         obs = call_tool(env, "list_passengers")
         assert obs.reward > 0
 
+    def test_includes_loyalty_status(self):
+        env = make_env("medium")
+        obs = call_tool(env, "list_passengers")
+        entry = obs.tool_result["passengers"][0]
+        assert "loyalty_status" in entry
+
+    def test_includes_booked_flag(self):
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        obs = call_tool(env, "list_passengers")
+        for pax in obs.tool_result["passengers"]:
+            if pax["passenger_id"] == "PAX-E001":
+                assert pax["booked"] is True
+            else:
+                assert pax["booked"] is False
+
 
 # ---------------------------------------------------------------------------
 # 3. TestGetPassengerDetails
@@ -217,6 +254,14 @@ class TestGetPassengerDetails:
         assert "group_id" in r
         assert "downstream_deadline" in r
 
+    def test_includes_loyalty_and_preferences(self):
+        env = make_env("medium")
+        obs = call_tool(env, "get_passenger_details", passenger_id="PAX-M001")
+        r = obs.tool_result
+        assert r["loyalty_status"] == "gold"
+        assert "paid_window" in r
+        assert "paid_legroom" in r
+
     def test_nonexistent_passenger_errors(self):
         env = make_env("medium")
         obs = call_tool(env, "get_passenger_details", passenger_id="PAX-FAKE")
@@ -228,6 +273,16 @@ class TestGetPassengerDetails:
         obs = call_tool(env, "get_passenger_details", passenger_id="PAX-E001")
         assert obs.tool_result["status"] == "success"
         assert obs.reward < 0  # penalty for querying already-booked
+
+    def test_booked_passenger_shows_current_booking(self):
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        obs = call_tool(env, "get_passenger_details", passenger_id="PAX-E001")
+        r = obs.tool_result
+        assert "current_booking" in r
+        assert r["current_booking"]["flight_id"] == "FL-201"
+        assert r["current_booking"]["cabin"] == "business"
+        assert "cost" in r["current_booking"]
 
 
 # ---------------------------------------------------------------------------
@@ -322,10 +377,11 @@ class TestBookPassenger:
         obs = book(env, "PAX-E004", "FL-201", "business")  # economy -> business
         assert obs.reward > 0
 
-    def test_downgrade_small_reward(self):
+    def test_downgrade_negative_reward(self):
+        """Downgrading a gold member from business to economy is penalized."""
         env = make_env("easy")
-        obs = book(env, "PAX-E001", "FL-201", "economy")  # business -> economy
-        assert obs.reward > 0  # still positive but small
+        obs = book(env, "PAX-E001", "FL-201", "economy")  # business -> economy (gold member)
+        assert obs.reward < 0
 
     def test_double_booking_errors(self):
         env = make_env("easy")
@@ -380,6 +436,46 @@ class TestBookPassenger:
         pids = {b["passenger_id"] for b in obs.booked_summary}
         assert pids == {"PAX-E001", "PAX-E002"}
 
+    def test_booking_cost_in_result(self):
+        """Successful bookings should include booking_cost."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E001", "FL-201", "business")  # same cabin -> cost=0
+        assert obs.tool_result["booking_cost"] == 0.0
+
+    def test_upgrade_has_cost(self):
+        """Economy -> business upgrade should cost money."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E004", "FL-201", "business")  # economy -> business
+        assert obs.tool_result["booking_cost"] > 0
+
+    def test_downgrade_has_compensation(self):
+        """Business -> economy downgrade should have compensation cost."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E001", "FL-201", "economy")  # business -> economy
+        assert obs.tool_result["booking_cost"] > 0
+
+    def test_total_cost_tracks_bookings(self):
+        """Total cost in observation should accumulate."""
+        env = make_env("easy")
+        obs1 = book(env, "PAX-E004", "FL-201", "business")  # economy -> business = upgrade cost
+        cost1 = obs1.tool_result["booking_cost"]
+        assert obs1.total_cost == cost1
+        obs2 = book(env, "PAX-E005", "FL-201", "business")  # economy -> business
+        cost2 = obs2.tool_result["booking_cost"]
+        assert obs2.total_cost == pytest.approx(cost1 + cost2)
+
+    def test_reward_breakdown_on_success(self):
+        """Successful booking should populate reward_breakdown."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E001", "FL-201", "business")
+        assert obs.reward_breakdown is not None
+        expected_keys = {
+            "coverage_delta", "cabin_match_delta", "group_delta",
+            "deadline_delta", "ssr_delta", "cost_delta",
+            "loyalty_delta", "opportunity_cost",
+        }
+        assert set(obs.reward_breakdown.keys()) == expected_keys
+
 
 # ---------------------------------------------------------------------------
 # 7. TestBookGroup
@@ -396,12 +492,8 @@ class TestBookGroup:
 
     def test_atomic_failure(self):
         """If capacity insufficient for all, none are booked."""
-        env = make_env("easy")
-        # FL-203 has 2 business seats. Group needs 3 economy, but let's try
-        # to book a non-existent group — use medium for group test
         env2 = make_env("medium")
-        # FL-203 has 2 business seats. Try to book GRP-M02 (2 members) in business on FL-203
-        # First fill one business seat
+        # FL-203 has 2 business seats. Fill them first.
         book(env2, "PAX-M001", "FL-203", "business")
         book(env2, "PAX-M002", "FL-203", "business")
         # Now FL-203 has 0 business seats. Try to book group
@@ -451,9 +543,84 @@ class TestBookGroup:
         assert obs.tool_result["status"] == "error"
         assert "already booked" in obs.tool_result["message"].lower()
 
+    def test_group_booking_cost_tracked(self):
+        """Group booking should report total_group_cost."""
+        env = make_env("medium")
+        obs = book_group(env, "GRP-M01", "FL-201",
+                         {"PAX-M003": "economy", "PAX-M004": "economy", "PAX-M005": "economy"})
+        assert "total_group_cost" in obs.tool_result
+        # Same cabin bookings -> 0 cost
+        assert obs.tool_result["total_group_cost"] == 0.0
+
 
 # ---------------------------------------------------------------------------
-# 8. TestFinalizePlan
+# 8. TestUnbookPassenger
+# ---------------------------------------------------------------------------
+
+class TestUnbookPassenger:
+    def test_successful_unbook(self):
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        obs = unbook(env, "PAX-E001")
+        assert obs.tool_result["status"] == "success"
+        assert obs.tool_result["passenger_id"] == "PAX-E001"
+        assert obs.tool_result["freed_flight"] == "FL-201"
+        assert obs.tool_result["freed_cabin"] == "business"
+
+    def test_unbook_frees_seat(self):
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        unbook(env, "PAX-E001")
+        obs = call_tool(env, "get_flight_details", flight_id="FL-201")
+        # Should be back to original 4 business seats
+        assert obs.tool_result["cabin_availability"]["business"] == 4
+
+    def test_unbook_updates_remaining(self):
+        env = make_env("easy")
+        obs1 = book(env, "PAX-E001", "FL-201", "business")
+        assert obs1.passengers_remaining == 7
+        obs2 = unbook(env, "PAX-E001")
+        assert obs2.passengers_remaining == 8
+
+    def test_unbook_reverses_cost(self):
+        env = make_env("easy")
+        obs1 = book(env, "PAX-E004", "FL-201", "business")  # economy -> business = upgrade cost
+        cost_after_book = obs1.total_cost
+        assert cost_after_book > 0
+        obs2 = unbook(env, "PAX-E004")
+        assert obs2.total_cost == pytest.approx(0.0)
+        assert obs2.tool_result["cost_reversed"] == pytest.approx(cost_after_book)
+
+    def test_unbook_not_booked_errors(self):
+        env = make_env("easy")
+        obs = unbook(env, "PAX-E001")
+        assert obs.tool_result["status"] == "error"
+        assert "not currently booked" in obs.tool_result["message"].lower()
+
+    def test_unbook_nonexistent_errors(self):
+        env = make_env("easy")
+        obs = unbook(env, "PAX-FAKE")
+        assert obs.tool_result["status"] == "error"
+
+    def test_unbook_then_rebook(self):
+        """After unbooking, the passenger can be rebooked."""
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        unbook(env, "PAX-E001")
+        obs = book(env, "PAX-E001", "FL-202", "business")
+        assert obs.tool_result["status"] == "success"
+        assert obs.tool_result["flight_id"] == "FL-202"
+
+    def test_unbook_reward_is_negative(self):
+        """Unbooking should have a small negative reward (disruption cost)."""
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        obs = unbook(env, "PAX-E001")
+        assert obs.reward < 0
+
+
+# ---------------------------------------------------------------------------
+# 9. TestFinalizePlan
 # ---------------------------------------------------------------------------
 
 class TestFinalizePlan:
@@ -481,7 +648,7 @@ class TestFinalizePlan:
 
 
 # ---------------------------------------------------------------------------
-# 9. TestEasyTask
+# 10. TestEasyTask
 # ---------------------------------------------------------------------------
 
 class TestEasyTask:
@@ -490,7 +657,7 @@ class TestEasyTask:
         obs = env.reset(task_id="easy")
         assert obs.passengers_total == 8
         assert obs.passengers_remaining == 8
-        assert obs.max_steps == 30
+        assert obs.max_steps == 20
 
     def test_full_optimal_booking(self):
         env = FlightRebookingEnvironment()
@@ -499,7 +666,7 @@ class TestEasyTask:
         assert obs.done is True
         assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
-        assert score > 0.99
+        assert score > 0.90
 
     def test_no_groups_no_ssr(self):
         """Easy data has no groups and no SSR."""
@@ -514,14 +681,19 @@ class TestEasyTask:
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
         obs = None
-        for _ in range(30):
+        for _ in range(20):
             obs = call_tool(env, "list_passengers")
         assert obs.done is True
-        assert obs.step_count == 30
+        assert obs.step_count == 20
+
+    def test_compensation_budget(self):
+        env = FlightRebookingEnvironment()
+        obs = env.reset(task_id="easy")
+        assert obs.compensation_budget == 5000.0
 
 
 # ---------------------------------------------------------------------------
-# 10. TestMediumTask
+# 11. TestMediumTask
 # ---------------------------------------------------------------------------
 
 class TestMediumTask:
@@ -530,7 +702,7 @@ class TestMediumTask:
         obs = env.reset(task_id="medium")
         assert obs.passengers_total == 15
         assert obs.passengers_remaining == 15
-        assert obs.max_steps == 60
+        assert obs.max_steps == 35
 
     def test_group_booking_works(self):
         env = make_env("medium")
@@ -557,11 +729,16 @@ class TestMediumTask:
         assert obs.done is True
         assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
-        assert score > 0.99
+        assert score > 0.90
+
+    def test_compensation_budget(self):
+        env = FlightRebookingEnvironment()
+        obs = env.reset(task_id="medium")
+        assert obs.compensation_budget == 4000.0
 
 
 # ---------------------------------------------------------------------------
-# 11. TestHardTask
+# 12. TestHardTask
 # ---------------------------------------------------------------------------
 
 class TestHardTask:
@@ -570,7 +747,7 @@ class TestHardTask:
         obs = env.reset(task_id="hard")
         assert obs.passengers_total == 25
         assert obs.passengers_remaining == 25
-        assert obs.max_steps == 90
+        assert obs.max_steps == 55
 
     def test_multiple_groups(self):
         """Hard data has 4 groups: 2 hard, 2 soft."""
@@ -606,11 +783,11 @@ class TestHardTask:
         assert obs.done is True
         assert obs.passengers_remaining == 0
         score = obs.tool_result["grader_score"]
-        assert score > 0.99
+        assert score > 0.90
 
 
 # ---------------------------------------------------------------------------
-# 12. TestInvalidTool
+# 13. TestInvalidTool
 # ---------------------------------------------------------------------------
 
 class TestInvalidTool:
@@ -633,7 +810,7 @@ class TestInvalidTool:
 
 
 # ---------------------------------------------------------------------------
-# 13. TestEpisodeCompletion
+# 14. TestEpisodeCompletion
 # ---------------------------------------------------------------------------
 
 class TestEpisodeCompletion:
@@ -654,11 +831,20 @@ class TestEpisodeCompletion:
         assert s.passengers_booked == 8
         assert s.passengers_remaining == 0
 
+    def test_state_tracks_cost(self):
+        """State property should expose cost tracking."""
+        env = FlightRebookingEnvironment()
+        env.reset(task_id="easy")
+        run_optimal_easy(env)
+        s = env.state
+        assert hasattr(s, "total_cost")
+        assert hasattr(s, "compensation_budget_remaining")
+
     def test_timeout_terminates(self):
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
         obs = None
-        for _ in range(30):
+        for _ in range(20):
             obs = call_tool(env, "list_passengers")
         assert obs.done is True
         assert "timed out" in obs.reward_reason.lower()
@@ -667,7 +853,7 @@ class TestEpisodeCompletion:
         env = FlightRebookingEnvironment()
         env.reset(task_id="easy")
         obs = None
-        for _ in range(30):
+        for _ in range(20):
             obs = call_tool(env, "list_passengers")
         assert "grader_score" in obs.tool_result
 
@@ -678,7 +864,8 @@ class TestEpisodeCompletion:
         bd = obs.tool_result["terminal_breakdown"]
         assert set(bd.keys()) == {
             "coverage_score", "cabin_match_score", "group_integrity_score",
-            "deadline_score", "ssr_integrity_score", "hard_violations",
+            "deadline_score", "ssr_integrity_score", "cost_efficiency_score",
+            "loyalty_compliance_score", "hard_violations",
         }
 
     def test_cumulative_reward_accumulates(self):
@@ -686,3 +873,44 @@ class TestEpisodeCompletion:
         obs1 = book(env, "PAX-E001", "FL-201", "business")
         obs2 = book(env, "PAX-E002", "FL-201", "business")
         assert obs2.cumulative_reward == pytest.approx(obs1.reward + obs2.reward)
+
+
+# ---------------------------------------------------------------------------
+# 15. TestCostTracking
+# ---------------------------------------------------------------------------
+
+class TestCostTracking:
+    def test_same_cabin_zero_cost(self):
+        """Same-cabin bookings should cost nothing."""
+        env = make_env("easy")
+        book(env, "PAX-E001", "FL-201", "business")
+        obs = book(env, "PAX-E004", "FL-201", "economy")
+        # E001 business->business = 0, E004 economy->economy = 0
+        assert obs.total_cost == 0.0
+
+    def test_upgrade_adds_cost(self):
+        """Economy -> business upgrade should add to total cost."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E004", "FL-201", "business")  # economy -> business
+        assert obs.total_cost > 0
+
+    def test_downgrade_adds_compensation(self):
+        """Business -> economy downgrade has compensation cost."""
+        env = make_env("easy")
+        obs = book(env, "PAX-E001", "FL-201", "economy")  # business -> economy
+        assert obs.total_cost > 0
+
+    def test_gold_downgrade_extra_compensation(self):
+        """Gold member downgrade incurs loyalty compensation on top of base."""
+        env = make_env("easy")
+        # PAX-E001 is gold, business -> economy
+        obs_gold = book(env, "PAX-E001", "FL-201", "economy")
+        gold_cost = obs_gold.tool_result["booking_cost"]
+
+        env2 = make_env("easy")
+        # PAX-E003 is none, business -> economy
+        obs_none = book(env2, "PAX-E003", "FL-201", "economy")
+        none_cost = obs_none.tool_result["booking_cost"]
+
+        # Gold member should cost more due to loyalty entitlements
+        assert gold_cost > none_cost

@@ -2,38 +2,118 @@
 
 ## Project Identity
 
-This is an **OpenEnv-compliant RL environment** for a Meta hackathon ("Team Agentic Troop"). We are **migrating** from a seat-reassignment-after-aircraft-swap scenario to a **flight rebooking/reaccommodation after cancellation** scenario.
+This is an **OpenEnv-compliant RL environment** for a Meta hackathon ("Team Agentic Troop"). The environment simulates **flight rebooking/reaccommodation after cancellation** — an agent must rebook passengers onto alternative flights respecting complex, interacting constraints.
 
 **Repo**: Python 3.10+ / FastAPI / OpenEnv-core  
 **Deployed on**: HuggingFace Spaces (Docker)  
-**Package name being renamed**: `seat_reassignment` → `flight_rebooking`
+**Package name**: `flight_rebooking` (directory still named `seat_reassignment`)
 
 ---
 
-## Migration Summary
+## Current Architecture
 
-| Aspect | OLD (seat_reassignment) | NEW (flight_rebooking) |
-|--------|------------------------|----------------------|
-| Problem | Aircraft swap — reassign seats AC-1→AC-2 | Flight cancelled — rebook passengers onto alternative flights |
-| Granularity | Seat-level (specific seats) | Inventory-level (cabin buckets on flights) |
-| Tools | 3 (get_passenger_details, assign_seat, swap_seats) | 7 (list_passengers, get_passenger_details, list_alternative_flights, get_flight_details, book_passenger, book_group, finalize_plan) |
-| Constraints | Cabin class, paid_window, paid_legroom | Priority tiers, groups (hard/soft), SSR flags (UM, WCHR, pet_cabin, pet_cargo), downstream deadlines, cabin matching, paid_window, paid_legroom |
-| Reward | Per-step + terminal weighted score | 3-layer: step-shaped + end-of-episode settlement + hard-constraint penalties |
-| Grader | cabin_score ± preference_score | 0.30×coverage + 0.15×cabin_match + 0.15×group_integrity + 0.10×deadline + 0.20×ssr_integrity + 0.10×preference |
-| Difficulty | Data varies (8 vs 20 passengers, preference types) | Data varies (passenger count, constraint density, capacity scarcity) — same prompt all tiers |
+### Core Components
+
+| File | Purpose |
+|------|---------|
+| `server/environment.py` | `FlightRebookingEnvironment` — OpenEnv `Environment` subclass with `reset()`, `step()`, `state` |
+| `server/tools.py` | 8 tool functions (pure: state + args → dict) |
+| `server/rewards.py` | `RewardComputer` — 3-layer reward system + 7-component grader |
+| `models.py` | Pydantic models: `FlightRebookingAction`, `FlightRebookingObservation`, `FlightRebookingState` |
+| `client.py` | `FlightRebookingEnv` — WebSocket client wrapping `EnvClient` |
+| `inference.py` | Baseline LLM inference loop using OpenAI-compatible client |
+| `data/generate.py` | Procedural data generator (seed-based, difficulty-scaled) |
+| `server/app.py` | FastAPI app via `create_app()` from openenv-core |
+| `openenv.yaml` | Spec metadata |
+
+### Tools (8 total)
+
+| # | Tool | Purpose |
+|---|------|---------|
+| 1 | `list_passengers` | Survey all passengers (lightweight summary) |
+| 2 | `get_passenger_details` | Full record for one passenger |
+| 3 | `list_alternative_flights` | All active flights with availability |
+| 4 | `get_flight_details` | Details for one flight |
+| 5 | `book_passenger` | Book one passenger onto a flight/cabin |
+| 6 | `book_group` | Book entire group atomically (same flight) |
+| 7 | `unbook_passenger` | Undo a booking — frees seat, reverses cost |
+| 8 | `finalize_plan` | End episode, trigger grading |
+
+### Grader Components (7, weights sum to 1.0)
+
+| Component | Weight | What it measures |
+|-----------|--------|-----------------|
+| Coverage | 0.25 | Fraction of passengers booked |
+| Cabin match | 0.15 | Priority-weighted same-cabin rate |
+| Group integrity | 0.12 | Groups kept on same flight/cabin |
+| Deadline | 0.13 | Deadline-bearing passengers arriving on time |
+| SSR integrity | 0.15 | SSR requirements met by booked flight |
+| Cost efficiency | 0.10 | Budget adherence + per-passenger cost |
+| Loyalty compliance | 0.10 | Gold/silver members not downgraded |
+
+Hard-constraint violations (SSR mismatch, hard group split) incur an additional 0.15 penalty each.
+
+### Observation Fields
+
+Standard: `passengers_total`, `passengers_booked`, `passengers_remaining`, `tool_result`, `reward_reason`, `step_count`, `max_steps`, `cumulative_reward`, `booked_summary`, `flights_snapshot`, `done`, `reward`
+
+Added in complexity update:
+- `reward_breakdown` — per-component deltas (coverage, cabin_match, group, deadline, ssr, cost, loyalty, opportunity_cost)
+- `events` — mid-episode events that fired this step
+- `total_cost` — accumulated cost (upgrades + compensation)
+- `compensation_budget` — budget ceiling for the episode
+
+### State Fields
+
+`episode_id`, `step_count`, `total_passengers`, `passengers_booked`, `passengers_remaining`, `cumulative_reward`, `is_complete`, `total_cost`, `compensation_budget_remaining`
 
 ---
 
-## Architecture (Must Preserve)
+## Complexity Features
 
-The OpenEnv contract MUST be maintained:
-- `server/app.py` — FastAPI app created via `create_app()` from openenv-core
-- `server/environment.py` — `Environment` subclass with `reset(seed, task_id)`, `step(action)`, `state` property
-- `models.py` — Pydantic models extending `Action`, `Observation`, `State` from openenv
-- `client.py` — `EnvClient` WebSocket client
-- `openenv.yaml` — spec metadata
-- `Dockerfile` — multi-stage build with openenv-base
-- `inference.py` — baseline inference script using OpenAI client
+### Mid-Episode Events
+Stochastic events fire at specific steps (procedural generation only, `events_enabled: true`):
+- **capacity_change** — cabin seats added/removed on a flight
+- **new_passenger** — missed-connection passenger added
+- **ssr_equipment_failure** — flight loses SSR support
+- **deadline_shift** — passenger's connection deadline changes
+- **secondary_cancellation** — another flight cancels, unbooks affected passengers
+
+### Cost Tracking
+- Upgrade costs: economy→business = $800, economy→premium_economy = $200, etc.
+- Downgrade compensation: business→economy = $700, etc.
+- Loyalty entitlements: gold gets lounge ($40) + meal ($25), silver gets meal ($25)
+- `compensation_budget` ceiling per episode; budget overrun penalized by grader
+
+### Progressive Difficulty
+- `_reward_scale = max(0.6, 1.0 - 0.4 * difficulty)` — positive rewards shrink at higher difficulty
+- Penalties are unaffected by difficulty
+- Step budgets tighten: ~2.5 steps/pax (easy) → ~2.0 steps/pax (hard)
+
+### Procedural Generation
+- `data/generate.py` generates passengers, flights, config, and events from a seed
+- Difficulty 0.0–1.0 controls: passenger count (8–45), flight count (3–8), SSR density, group density, surplus ratio, step budget
+- Adversarial scenarios: greedy traps, distractor flights, priority inversion, Pareto conflicts
+
+### Decomposed Rewards
+Each booking step returns a `reward_breakdown` dict with 8 component deltas, plus opportunity cost when scarce resources are consumed.
+
+---
+
+## Data Files
+
+### Static data: `data/{easy,medium,hard}/`
+Each tier directory contains:
+- `config.json` — `task_id`, `max_steps`, `compensation_budget`, `difficulty`, `events_enabled`
+- `passengers.json` — array of passenger records with `loyalty_status`
+- `flights.json` — array of flight records with `cabin_availability`, `supports_ssr`
+
+### Step budgets (static tiers)
+| Tier | Passengers | Max Steps | Steps/Pax | Difficulty | Budget |
+|------|-----------|-----------|-----------|------------|--------|
+| easy | 8 | 20 | 2.5 | 0.2 | $5,000 |
+| medium | 15 | 35 | 2.3 | 0.5 | $4,000 |
+| hard | 25 | 55 | 2.2 | 0.8 | $5,000 |
 
 ---
 
@@ -41,53 +121,14 @@ The OpenEnv contract MUST be maintained:
 
 1. **Never break the OpenEnv interface.** `reset()` returns Observation. `step()` takes Action, returns Observation. `state` returns State.
 2. **All tool logic lives in `server/tools.py`.** Tools are pure functions taking state + args → dict.
-3. **All reward logic lives in `server/rewards.py`.** Stateless `RewardComputer` class.
-4. **Data files go in `data/{easy,medium,hard}/`.** JSON configs for flights, passengers. CSV is fine too.
+3. **All reward logic lives in `server/rewards.py`.** `RewardComputer` class.
+4. **Data files go in `data/{easy,medium,hard}/`.** JSON configs for flights, passengers.
 5. **Models in `models.py` must inherit** from openenv base types (`Action`, `Observation`, `State`).
 6. **The system prompt in `inference.py` is constant across all difficulty tiers.** Difficulty comes from data only.
 7. **Grader score must be in (EPS, 1-EPS)** where EPS = 1e-4. Clamped, deterministic, reproducible.
-8. **Tests must cover all 3 difficulty tiers** with known-good assignments that achieve grader_score ≈ 1.0.
+8. **Tests must cover all 3 difficulty tiers** with known-good assignments that achieve grader_score > 0.90.
 9. **Step budget** = configurable per tier via data, not hardcoded.
-
----
-
-## File Change Map
-
-### Files to REWRITE (complete replacement):
-- `server/environment.py` — new EpisodeState, new reset/step logic, flight-based inventory
-- `server/tools.py` — 7 new tools replacing 3 old tools
-- `server/rewards.py` — 3-layer reward system, new grader formula
-- `models.py` — new Action/Observation/State with flight-booking fields
-- `inference.py` — new system prompt, new tool calling logic
-- `client.py` — updated model imports
-
-### Files to UPDATE:
-- `openenv.yaml` — rename to flight_rebooking
-- `pyproject.toml` — rename package, update metadata
-- `Dockerfile` — update CMD entry point, package name
-- `__init__.py` — update imports/exports
-- `server/__init__.py` — update docstring
-- `README.md` — complete rewrite for new problem
-- `.gitignore` / `.dockerignore` — minor updates if needed
-
-### Files to CREATE:
-- `data/easy/` — new JSON data files (flights, passengers, services)
-- `data/medium/` — new JSON data files
-- `data/hard/` — new JSON data files
-- `data/easy/generate_data.py` (optional)
-- `data/medium/generate_data.py` (optional)  
-- `data/hard/generate_data.py` (optional)
-
-### Files to REWRITE:
-- `tests/test_environment.py` — all new test cases for flight rebooking
-- `tests/test_rewards.py` — all new reward/grader tests
-
-### Files to DELETE:
-- `data/*/ac1_config.json`, `data/*/ac2_config.json` — aircraft configs no longer needed
-- `data/*/seats_ac1.csv`, `data/*/seats_ac2.csv` — seat CSVs no longer needed
-- `data/*/assignments.csv` — old assignment format
-- `data/*/passengers.json` (medium) — replaced by new format
-- `data/*/generate_data.py` (old versions)
+10. **Backward compatibility**: `_load_static()` adds defaults for `loyalty_status`, `compensation_budget`, `difficulty`, `events_enabled` when missing from old data files.
 
 ---
 
@@ -95,7 +136,7 @@ The OpenEnv contract MUST be maintained:
 
 - Package: `flight_rebooking` (snake_case)
 - Classes: `FlightRebookingAction`, `FlightRebookingObservation`, `FlightRebookingState`, `FlightRebookingEnvironment`, `FlightRebookingEnv`
-- Tool functions: `tool_list_passengers`, `tool_get_passenger_details`, `tool_list_alternative_flights`, `tool_get_flight_details`, `tool_book_passenger`, `tool_book_group`, `tool_finalize_plan`
+- Tool functions: `tool_list_passengers`, `tool_get_passenger_details`, `tool_list_alternative_flights`, `tool_get_flight_details`, `tool_book_passenger`, `tool_book_group`, `tool_unbook_passenger`, `tool_finalize_plan`
 
 ---
 
@@ -105,8 +146,8 @@ The OpenEnv contract MUST be maintained:
 2. **Read `agent_docs/architecture.md`** for data model schemas and file structure.
 3. **Read `agent_docs/testing_strategy.md`** for test requirements.
 4. Implement in this order: data → models → tools → rewards → environment → tests → inference → packaging.
-5. Run `pytest tests/ -v` after each major module.
-6. Run `uv run server` to verify the server starts.
+5. Run tests: `cd` to project root, then `.venv/Scripts/python.exe -m pytest tests/ -v`
+6. Run server: `uv run server` to verify the server starts.
 
 ---
 
@@ -114,10 +155,10 @@ The OpenEnv contract MUST be maintained:
 
 - Python 3.10+
 - FastAPI (via openenv-core)
-- pandas (for data manipulation in environment)
 - pydantic (models)
-- openenv-core[core] >= 0.2.2
+- openenv-core[core] >= 0.2.3
 - openai (inference client)
 - pytest (testing)
 - Docker (deployment)
 - uv (package management)
+- Virtual environment at `.venv/` (has openenv-core installed)

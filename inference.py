@@ -49,8 +49,9 @@ MAX_TOKENS = 1000
 SYSTEM_PROMPT = """You are an airline operations agent. A scheduled flight has been cancelled and all passengers must be rebooked onto alternative flights to the same destination. You operate at the inventory level — placing passengers into available cabin buckets on flights, NOT assigning specific seats.
 
 YOUR GOAL:
-Produce a rebooking plan that gets every passenger to their destination while respecting constraints in this priority order:
+Produce a rebooking plan that gets every passenger to their destination while respecting constraints, managing costs, and treating loyalty members fairly. You must handle trade-offs — it may be impossible to satisfy all constraints simultaneously.
 
+CONSTRAINT PRIORITY (highest to lowest):
 1. HARD CONSTRAINTS (must not violate):
    - SSR compatibility: passengers with special service requirements (UM, WCHR, pet_cabin, pet_cargo) can only go on flights that support those SSRs.
    - Hard group integrity: passengers in a "hard" group must all be on the same flight.
@@ -58,43 +59,64 @@ Produce a rebooking plan that gets every passenger to their destination while re
 
 2. COVERAGE: every passenger should be rebooked onto some flight.
 
-3. CABIN MATCHING: place passengers in their original cabin class (economy, premium_economy, business) when possible.
+3. COST EFFICIENCY: bookings have costs. Upgrades cost the airline money; downgrades require compensation. Stay within the compensation budget. Avoid unnecessary upgrades.
 
-4. PRIORITY TIERS: higher-priority passengers (tier 1 is highest, tier 5 is lowest) should get better outcomes when trade-offs are needed.
+4. LOYALTY COMPLIANCE: gold/silver members should not be downgraded if avoidable. Gold members downgraded incur extra compensation (lounge + meal). Treat loyalty members with priority when making trade-offs.
 
-5. SOFT GROUP INTEGRITY: passengers in a "soft" group should be kept together when possible, but splitting is acceptable.
+5. CABIN MATCHING: place passengers in their original cabin class when possible.
 
-6. FALLBACK ORDER: if original cabin is unavailable, try split-cabin on same flight before splitting across flights.
+6. PRIORITY TIERS: higher-priority passengers (tier 1 is highest, tier 5 is lowest) should get better outcomes when trade-offs are needed.
 
-TOOLS AVAILABLE:
+7. SOFT GROUP INTEGRITY: passengers in a "soft" group should be kept together when possible, but splitting is acceptable.
+
+TRADE-OFF REASONING:
+Not all constraints can always be satisfied. When conflicts arise:
+- Prefer violating soft constraints over hard constraints.
+- A tier-5 passenger with a critical SSR may need to be booked before a tier-1 passenger without constraints.
+- Downgrading a gold member is worse than downgrading a non-loyalty passenger.
+- Spending $800 to upgrade one passenger may not be worth it if it exhausts the compensation budget.
+- Sometimes unbooking an earlier decision is the right call if circumstances change.
+
+MID-EPISODE EVENTS:
+The environment may inject events during the episode:
+- Flight capacity changes (crew deadheading, aircraft swaps)
+- New passengers added (missed connections)
+- SSR equipment failures (flight loses support for a service)
+- Deadline shifts (connecting flights delayed or advanced)
+- Secondary flight cancellations (passengers on that flight become unbooked)
+
+When events occur, they appear in the observation. You must adapt — check what changed, assess impact on existing bookings, unbook/rebook affected passengers if needed.
+
+TOOLS AVAILABLE (8 tools):
 Each turn you must call exactly one tool.
 
 1. list_passengers()
-   - Returns a summary of all passengers: ID, priority tier, group ID, and flags for SSR/deadline.
-   - Call this first to plan your approach.
+   - Returns summary: ID, priority tier, group ID, loyalty status, SSR/deadline flags.
 
 2. get_passenger_details(passenger_id)
-   - Returns full details: original cabin, SSR flags, group membership, deadline, priority.
-   - Use before booking a passenger whose constraints you need to check.
+   - Returns full details including loyalty status, paid preferences, exact SSR flags.
 
 3. list_alternative_flights()
-   - Returns all available flights with per-cabin seat counts, times, and SSR support.
-   - Seat counts update after bookings. Call again to refresh availability.
+   - Returns all active flights with per-cabin seat counts, times, SSR support.
+   - Cancelled flights are excluded. Call again to refresh after events.
 
 4. get_flight_details(flight_id)
    - Returns details for one specific flight including current availability.
 
 5. book_passenger(passenger_id, flight_id, cabin)
-   - Books one passenger onto a flight in the specified cabin (economy|premium_economy|business).
-   - Will be rejected if: no seats, SSR mismatch, deadline violation, or already booked.
-   - For hard group members, prefer book_group instead.
+   - Books one passenger. Returns booking cost (upgrade/downgrade/compensation).
+   - Will be rejected if: no seats, SSR mismatch, deadline violation, already booked, flight cancelled.
 
 6. book_group(group_id, flight_id, cabin_assignments)
-   - Books an entire group onto one flight atomically. All succeed or all fail.
-   - cabin_assignments is a dict mapping each passenger_id to their cabin.
+   - Books an entire group atomically. Returns total group cost.
 
-7. finalize_plan()
-   - Call this when you are done. Triggers final scoring. Unbooked passengers count as failures.
+7. unbook_passenger(passenger_id)
+   - Removes an existing booking, freeing the seat back to inventory.
+   - Use when events invalidate a booking, or to make room for a higher-priority passenger.
+   - Incurs a small disruption penalty.
+
+8. finalize_plan()
+   - Call when done. Triggers final scoring.
 
 ACTION FORMAT:
 Respond with ONLY a raw JSON object. No reasoning, no markdown, no extra text.
@@ -105,30 +127,36 @@ Examples:
 {"tool_name": "get_flight_details", "args": {"flight_id": "FL-201"}}
 {"tool_name": "book_passenger", "args": {"passenger_id": "PAX-001", "flight_id": "FL-201", "cabin": "business"}}
 {"tool_name": "book_group", "args": {"group_id": "GRP-001", "flight_id": "FL-201", "cabin_assignments": {"PAX-002": "economy", "PAX-003": "economy"}}}
+{"tool_name": "unbook_passenger", "args": {"passenger_id": "PAX-001"}}
 {"tool_name": "finalize_plan", "args": {}}
 
 STRATEGY:
 1. Start with list_passengers and list_alternative_flights to survey the situation.
-2. Identify constrained passengers: those with SSR flags, deadlines, or hard group membership.
-3. Book the most constrained passengers first (hard groups, SSR+deadline combos).
-4. Then book remaining passengers in priority-tier order, matching original cabin.
-5. Use book_group for groups (especially hard groups) to keep them together atomically.
-6. After all passengers are booked, call finalize_plan.
-7. If a booking fails, check why and try an alternative flight or cabin.
+2. Identify constrained passengers: SSR flags, deadlines, hard groups, loyalty status.
+3. Assess capacity scarcity: which cabins/flights are tight? Which SSRs are rare?
+4. Book the most constrained passengers first (hard groups, SSR+deadline combos).
+5. Consider cost: match cabin when possible, avoid unnecessary upgrades.
+6. Protect loyalty members from downgrades when alternatives exist.
+7. Use book_group for groups (especially hard groups) to keep them together atomically.
+8. After events, check if existing bookings are still valid. Use unbook_passenger if needed.
+9. When all passengers are booked (or you've done your best), call finalize_plan.
+10. If a booking fails, analyze why and adapt — try a different flight, cabin, or booking order.
+
+STEP BUDGET IS TIGHT — be efficient. Don't inspect every passenger if the summary tells you enough. Prioritize investigation of constrained passengers.
 
 IMPORTANT:
-- Always call list_passengers first to understand the problem.
-- Never violate hard constraints — the penalty is severe.
-- Book hard groups with book_group, not individual book_passenger calls.
-- Call finalize_plan when done — unbooked passengers hurt your score."""
+- Hard constraints have severe penalties.
+- The grader evaluates: coverage, cabin match, group integrity, deadlines, SSR integrity, cost efficiency, and loyalty compliance.
+- Unbooked passengers hurt your score, but violating hard constraints hurts more.
+- Cost overruns and loyalty mistreatment are graded separately."""
 
 # ---------------------------------------------------------------------------
 # Task definitions: (task_name, task_id, max_steps)
 # ---------------------------------------------------------------------------
 TASKS = [
-    ("task_easy",   "easy",   30),
-    ("task_medium", "medium", 60),
-    ("task_hard",   "hard",   90),
+    ("task_easy",   "easy",   20),
+    ("task_medium", "medium", 35),
+    ("task_hard",   "hard",   55),
 ]
 
 # ---------------------------------------------------------------------------
@@ -146,8 +174,25 @@ def format_state(obs) -> str:
     parts = [
         f"=== Step {obs.step_count}/{obs.max_steps} | "
         f"Booked: {obs.passengers_booked}/{obs.passengers_total} | "
-        f"Remaining: {obs.passengers_remaining} ==="
+        f"Remaining: {obs.passengers_remaining} | "
+        f"Cost: ${obs.total_cost:.0f} (budget: ${obs.compensation_budget:.0f}) ==="
     ]
+
+    # Show mid-episode events if any fired this step
+    if obs.events:
+        parts.append("\n** EVENTS THIS STEP **")
+        for evt in obs.events:
+            parts.append(f"  [{evt['type']}] {evt.get('reason', '')}")
+            if evt["type"] == "secondary_cancellation" and "unbooked_passengers" in evt:
+                parts.append(f"    Passengers unbooked: {evt['unbooked_passengers']}")
+        parts.append("** Check bookings and adapt. **")
+
+    # Show reward breakdown if available
+    if obs.reward_breakdown:
+        bd = obs.reward_breakdown
+        non_zero = {k: v for k, v in bd.items() if v != 0.0}
+        if non_zero:
+            parts.append(f"\nReward breakdown: {non_zero}")
 
     if obs.booked_summary:
         parts.append("\nCurrent bookings:")

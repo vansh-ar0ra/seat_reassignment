@@ -2,21 +2,30 @@
 Core environment implementation for the Flight Rebooking task.
 
 A flight has been cancelled. The agent must rebook passengers onto
-alternative flights using 7 tools:
+alternative flights using 8 tools:
   - list_passengers           -> survey all passengers
   - get_passenger_details     -> inspect one passenger
   - list_alternative_flights  -> survey flight inventory
   - get_flight_details        -> inspect one flight
   - book_passenger            -> commit one passenger to a flight/cabin
   - book_group                -> commit an entire group atomically
+  - unbook_passenger          -> undo a booking (frees seat, incurs cost)
   - finalize_plan             -> end the episode and trigger grading
 
-An episode ends when finalize_plan is called, all passengers are booked,
-or the step limit is reached.
+Features:
+  - Stochastic mid-episode events (capacity changes, new passengers,
+    SSR equipment failures, deadline shifts, secondary cancellations)
+  - Tighter step budgets (~2.0-2.5 steps per passenger at high difficulty)
+  - Cost tracking (upgrade costs, downgrade compensation, loyalty entitlements)
+  - Decomposed reward breakdowns per step
+  - Opportunity cost signaling
+  - Procedural data generation via seed
+  - Progressive difficulty scaling
 """
 
 import copy
 import json
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -38,9 +47,10 @@ try:
         tool_get_flight_details,
         tool_book_passenger,
         tool_book_group,
+        tool_unbook_passenger,
         tool_finalize_plan,
     )
-    from .rewards import RewardComputer
+    from .rewards import RewardComputer, REWARD_FINALIZE
 except ImportError:
     from models import (
         FlightRebookingAction,
@@ -54,9 +64,10 @@ except ImportError:
         tool_get_flight_details,
         tool_book_passenger,
         tool_book_group,
+        tool_unbook_passenger,
         tool_finalize_plan,
     )
-    from server.rewards import RewardComputer
+    from server.rewards import RewardComputer, REWARD_FINALIZE
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +101,26 @@ class EpisodeState:
     cumulative_reward: float = 0.0
     done: bool = False
 
+    # --- NEW: Cost tracking ---
+    total_cost: float = 0.0
+    compensation_budget: float = 0.0
+
+    # --- NEW: Mid-episode events ---
+    pending_events: List[dict] = field(default_factory=list)
+    fired_events_log: List[dict] = field(default_factory=list)
+
+    # --- NEW: Cancelled flights (secondary cancellations) ---
+    cancelled_flights: Set[str] = field(default_factory=set)
+
+    # --- NEW: Unbook tracking ---
+    unbook_count: int = 0
+
+    # --- NEW: Event tracking for current step ---
+    events_this_step: List[dict] = field(default_factory=list)
+
+    # --- NEW: Difficulty level ---
+    difficulty: float = 0.5
+
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -100,9 +131,16 @@ class FlightRebookingEnvironment(Environment):
     OpenEnv environment for airline flight rebooking after cancellation.
 
     An episode consists of an agent rebooking passengers from a cancelled
-    flight onto alternative flights using 7 tools. The episode ends when
+    flight onto alternative flights using 8 tools. The episode ends when
     finalize_plan is called, all passengers are booked, or the step limit
     is reached.
+
+    Supports:
+    - Static data loading from data/{task_id}/ directories
+    - Procedural generation via seed parameter
+    - Mid-episode stochastic events
+    - Cost tracking and loyalty compliance
+    - Decomposed reward feedback
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
@@ -124,20 +162,25 @@ class FlightRebookingEnvironment(Environment):
         episode_id = str(uuid4())
         self._state = State(episode_id=episode_id, step_count=0)
 
-        # Resolve data directory
-        task_dir = self._data_dir / task_id
-        if not task_dir.is_dir():
-            raise ValueError(
-                f"Unknown task_id {task_id!r}: no data directory at {task_dir}"
+        # --- Decide data source: procedural vs static ---
+        if seed is not None and task_id.startswith("seed_"):
+            # Procedural generation
+            passengers_list, flights_list, config, pending_events = (
+                self._generate_procedural(seed, task_id)
             )
-
-        # Load files
-        with open(task_dir / "config.json") as f:
-            config = json.load(f)
-        with open(task_dir / "passengers.json") as f:
-            passengers_list = json.load(f)["passengers"]
-        with open(task_dir / "flights.json") as f:
-            flights_list = json.load(f)["flights"]
+        elif seed is not None:
+            # Static task_id but with a seed: use procedural with difficulty
+            # mapped from task_id
+            difficulty_map = {"easy": 0.2, "medium": 0.5, "hard": 0.8}
+            diff = difficulty_map.get(task_id, 0.5)
+            passengers_list, flights_list, config, pending_events = (
+                self._generate_procedural(seed, task_id, difficulty=diff)
+            )
+        else:
+            # Static data from files
+            passengers_list, flights_list, config, pending_events = (
+                self._load_static(task_id)
+            )
 
         # Build dicts
         passengers = {p["passenger_id"]: p for p in passengers_list}
@@ -157,6 +200,8 @@ class FlightRebookingEnvironment(Environment):
         }
 
         max_steps = config.get("max_steps", 60)
+        compensation_budget = config.get("compensation_budget", 0.0)
+        difficulty = config.get("difficulty", 0.5)
 
         self._episode = EpisodeState(
             passengers=passengers,
@@ -174,10 +219,20 @@ class FlightRebookingEnvironment(Environment):
             max_steps=max_steps,
             cumulative_reward=0.0,
             done=False,
+            total_cost=0.0,
+            compensation_budget=compensation_budget,
+            pending_events=pending_events,
+            fired_events_log=[],
+            cancelled_flights=set(),
+            unbook_count=0,
+            events_this_step=[],
+            difficulty=difficulty,
         )
         self._reward_computer = RewardComputer(
             total_passengers=len(passengers),
             max_steps=max_steps,
+            difficulty=difficulty,
+            compensation_budget=compensation_budget,
         )
 
         return self._build_observation(
@@ -185,6 +240,7 @@ class FlightRebookingEnvironment(Environment):
             reward=0.0,
             reward_reason="Episode started",
             done=False,
+            reward_breakdown=None,
         )
 
     def step(
@@ -201,8 +257,15 @@ class FlightRebookingEnvironment(Environment):
         ep.step_count += 1
         self._state.step_count += 1
 
+        # --- Fire any pending events for this step ---
+        ep.events_this_step = []
+        self._fire_events(ep)
+        had_event = len(ep.events_this_step) > 0
+
         tool_name = action.tool_name
         args = action.args
+
+        reward_breakdown = None
 
         # --- Route tool call ---
         try:
@@ -252,6 +315,18 @@ class FlightRebookingEnvironment(Environment):
                     reward, reason = rc.reward_for_booking(
                         tool_result, pax, ep
                     )
+                    # Decomposed breakdown
+                    reward_breakdown = rc.compute_step_breakdown(
+                        tool_result, pax, ep
+                    )
+                    # Opportunity cost
+                    opp_cost, opp_explanation = rc.compute_opportunity_cost(
+                        pax, fid, cabin, ep
+                    )
+                    if opp_cost != 0.0:
+                        reward += opp_cost
+                        reason += f" | Opportunity cost: {opp_explanation}"
+                        reward_breakdown["opportunity_cost"] = opp_cost
                 else:
                     reward, reason = rc.reward_for_failed_action(tool_result)
 
@@ -270,6 +345,11 @@ class FlightRebookingEnvironment(Environment):
                     )
                 else:
                     reward, reason = rc.reward_for_failed_action(tool_result)
+
+            elif tool_name == "unbook_passenger":
+                pid = args.get("passenger_id", "")
+                tool_result = tool_unbook_passenger(ep, pid)
+                reward, reason = rc.reward_for_unbook(tool_result, had_event)
 
             elif tool_name == "finalize_plan":
                 tool_result = tool_finalize_plan(ep)
@@ -294,10 +374,12 @@ class FlightRebookingEnvironment(Environment):
         # --- Terminal grading ---
         if done:
             breakdown = rc.terminal_breakdown(
-                ep.bookings, ep.passengers, ep.flights, ep.groups
+                ep.bookings, ep.passengers, ep.flights, ep.groups,
+                ep.total_cost, ep.compensation_budget,
             )
             grader = rc.grader_score(
-                ep.bookings, ep.passengers, ep.flights, ep.groups
+                ep.bookings, ep.passengers, ep.flights, ep.groups,
+                ep.total_cost, ep.compensation_budget,
             )
 
             if step_limit_reached and not all_booked and not ep.done:
@@ -321,6 +403,7 @@ class FlightRebookingEnvironment(Environment):
             reward=reward,
             reward_reason=reason,
             done=done,
+            reward_breakdown=reward_breakdown,
         )
 
     @property
@@ -339,10 +422,142 @@ class FlightRebookingEnvironment(Environment):
             passengers_remaining=len(ep.passengers) - n_booked,
             cumulative_reward=ep.cumulative_reward,
             is_complete=ep.done,
+            total_cost=ep.total_cost,
+            compensation_budget_remaining=ep.compensation_budget - ep.total_cost,
         )
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Data loading
+    # ------------------------------------------------------------------
+
+    def _load_static(self, task_id: str):
+        """Load data from static JSON files in data/{task_id}/."""
+        task_dir = self._data_dir / task_id
+        if not task_dir.is_dir():
+            raise ValueError(
+                f"Unknown task_id {task_id!r}: no data directory at {task_dir}"
+            )
+
+        with open(task_dir / "config.json") as f:
+            config = json.load(f)
+        with open(task_dir / "passengers.json") as f:
+            passengers_list = json.load(f)["passengers"]
+        with open(task_dir / "flights.json") as f:
+            flights_list = json.load(f)["flights"]
+
+        # Add default fields for backward compatibility with old data files
+        for pax in passengers_list:
+            pax.setdefault("loyalty_status", "none")
+        config.setdefault("compensation_budget", 0.0)
+        config.setdefault("difficulty", {"easy": 0.2, "medium": 0.5, "hard": 0.8}.get(task_id, 0.5))
+        config.setdefault("events_enabled", False)
+
+        return passengers_list, flights_list, config, []
+
+    def _generate_procedural(self, seed: int, task_id: str, difficulty: float = None):
+        """Generate episode data procedurally from a seed."""
+        import sys
+        import os
+        # Add data directory to path for generator import
+        data_dir = str(self._data_dir)
+        if data_dir not in sys.path:
+            sys.path.insert(0, str(self._data_dir.parent))
+
+        from data.generate import generate_episode_data, generate_events
+
+        # Parse difficulty from task_id if not provided
+        if difficulty is None:
+            # Extract from task_id like "seed_42" or use 0.5
+            difficulty = 0.5
+
+        passengers_doc, flights_doc, config = generate_episode_data(
+            seed=seed, difficulty=difficulty
+        )
+
+        passengers_list = passengers_doc["passengers"]
+        flights_list = flights_doc["flights"]
+
+        # Generate mid-episode events if enabled
+        pending_events = []
+        if config.get("events_enabled", False):
+            rng = random.Random(seed + 1000)  # separate seed for events
+            pending_events = generate_events(
+                rng, passengers_list, flights_list,
+                config["max_steps"], difficulty,
+            )
+
+        return passengers_list, flights_list, config, pending_events
+
+    # ------------------------------------------------------------------
+    # Mid-episode events
+    # ------------------------------------------------------------------
+
+    def _fire_events(self, ep: EpisodeState) -> None:
+        """Check and fire any pending events for the current step."""
+        if not ep.pending_events:
+            return
+
+        to_fire = [e for e in ep.pending_events if e["step"] == ep.step_count]
+        ep.pending_events = [e for e in ep.pending_events if e["step"] != ep.step_count]
+
+        for event in to_fire:
+            self._apply_event(ep, event)
+            ep.events_this_step.append(event)
+            ep.fired_events_log.append(event)
+
+    def _apply_event(self, ep: EpisodeState, event: dict) -> None:
+        """Apply a single mid-episode event to the episode state."""
+        etype = event["type"]
+
+        if etype == "capacity_change":
+            fid = event["flight_id"]
+            cabin = event["cabin"]
+            delta = event["delta"]
+            if fid in ep.flight_availability and fid not in ep.cancelled_flights:
+                current = ep.flight_availability[fid].get(cabin, 0)
+                ep.flight_availability[fid][cabin] = max(0, current + delta)
+
+        elif etype == "new_passenger":
+            new_pax = event["passenger"]
+            pid = new_pax["passenger_id"]
+            ep.passengers[pid] = new_pax
+            # New passenger is unbooked; agent must handle them
+
+        elif etype == "ssr_equipment_failure":
+            fid = event.get("flight_id")
+            lost_ssr = event.get("lost_ssr")
+            if fid and lost_ssr and fid in ep.flights and fid not in ep.cancelled_flights:
+                ssr_list = ep.flights[fid]["supports_ssr"]
+                if lost_ssr in ssr_list:
+                    ssr_list.remove(lost_ssr)
+                # Passengers already booked on this flight with that SSR
+                # are now in violation — agent must detect and fix this
+                # (the grader will penalize at terminal scoring)
+
+        elif etype == "deadline_shift":
+            pid = event.get("passenger_id")
+            new_dl = event.get("new_deadline")
+            if pid and pid in ep.passengers and new_dl:
+                ep.passengers[pid]["downstream_deadline"] = new_dl
+
+        elif etype == "secondary_cancellation":
+            fid = event.get("flight_id")
+            if fid and fid in ep.flights:
+                ep.cancelled_flights.add(fid)
+                # Unbook all passengers on this flight
+                to_unbook = [
+                    pid for pid, b in ep.bookings.items()
+                    if b["flight_id"] == fid
+                ]
+                for pid in to_unbook:
+                    booking = ep.bookings[pid]
+                    ep.total_cost -= booking.get("cost", 0.0)
+                    del ep.bookings[pid]
+                if to_unbook:
+                    event["unbooked_passengers"] = to_unbook
+
+    # ------------------------------------------------------------------
+    # Observation building
     # ------------------------------------------------------------------
 
     def _build_observation(
@@ -351,6 +566,7 @@ class FlightRebookingEnvironment(Environment):
         reward: float,
         reward_reason: str,
         done: bool,
+        reward_breakdown: Optional[dict] = None,
     ) -> FlightRebookingObservation:
         ep = self._episode
         n_booked = len(ep.bookings)
@@ -376,7 +592,11 @@ class FlightRebookingEnvironment(Environment):
                     "supports_ssr": fl["supports_ssr"],
                 }
                 for fid, fl in ep.flights.items()
+                if fid not in ep.cancelled_flights
             ]
+
+        # Events that fired this step
+        events = ep.events_this_step if ep.events_this_step else None
 
         return FlightRebookingObservation(
             passengers_total=len(ep.passengers),
@@ -391,8 +611,8 @@ class FlightRebookingEnvironment(Environment):
             flights_snapshot=flights_snapshot,
             done=done,
             reward=reward,
+            reward_breakdown=reward_breakdown,
+            events=events,
+            total_cost=ep.total_cost,
+            compensation_budget=ep.compensation_budget,
         )
-
-
-# Import needed for finalize reward constant
-from server.rewards import REWARD_FINALIZE  # noqa: E402
