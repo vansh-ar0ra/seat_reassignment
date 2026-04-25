@@ -268,7 +268,7 @@ def tool_book_passenger(ep, passenger_id: str, flight_id: str, cabin: str) -> di
             "status": "error",
             "message": (
                 f"Passenger {passenger_id} is already booked on "
-                f"{existing['flight_id']} in {existing['cabin']}"
+                f"{existing['flight_id']} in {existing['cabin']}. Try a different passenger pid."
             ),
         }
 

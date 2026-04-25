@@ -41,6 +41,7 @@ ENV_URL = os.getenv("ENV_URL") or os.getenv("SERVER_URL") or "http://localhost:8
 BENCHMARK = "flight_rebooking"
 TEMPERATURE = 0.3
 MAX_TOKENS = 1000
+RESULTS_DIR = os.getenv("RESULTS_DIR") or "results"
 
 # ---------------------------------------------------------------------------
 # System prompt (constant across all difficulty tiers)
@@ -210,6 +211,12 @@ def format_state(obs) -> str:
                 f"SSR={fl['supports_ssr']} [{avail}]"
             )
 
+    if obs.passengers_remaining > 0 and obs.booked_summary:
+        booked_pids = {b["passenger_id"] for b in obs.booked_summary}
+        # The model needs to know WHO is remaining, not just the count
+        parts.append(f"\nBooked pids: {booked_pids}")
+        parts.append(f"\nStill need booking: {obs.passengers_remaining} passengers (checklist_passengers)")
+
     return "\n".join(parts)
 
 
@@ -277,7 +284,7 @@ def get_agent_action(
     else:
         messages.append({"role": "user", "content": format_main_task(task_id)})
 
-        recent_history = conversation_history[-6:]
+        recent_history = conversation_history[-12:]
         for i, item in enumerate(recent_history):
             messages.append(
                 {"role": "assistant", "content": json.dumps(item["action"])}
@@ -346,6 +353,64 @@ def log_end(
     )
 
 
+def save_assignments(
+    task_name: str,
+    task_id: str,
+    obs,
+    steps_taken: int,
+    score: float,
+    rewards: List[float],
+) -> None:
+    """Save final passenger assignments and episode summary to a JSON file."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    # Build per-passenger assignment records from booked_summary
+    assignments = []
+    booked_pids = set()
+    if obs and obs.booked_summary:
+        for b in obs.booked_summary:
+            assignments.append({
+                "passenger_id": b["passenger_id"],
+                "flight_id": b["flight_id"],
+                "cabin": b["cabin"],
+                "status": "booked",
+            })
+            booked_pids.add(b["passenger_id"])
+
+    # Mark unbooked passengers
+    n_unbooked = (obs.passengers_total - len(booked_pids)) if obs else 0
+    # We don't have IDs for unbooked passengers from the observation alone,
+    # so record the count in the summary.
+
+    # Terminal breakdown and grader score from tool_result
+    terminal_breakdown = None
+    if obs and obs.tool_result and "terminal_breakdown" in obs.tool_result:
+        terminal_breakdown = obs.tool_result["terminal_breakdown"]
+
+    result = {
+        "task_name": task_name,
+        "task_id": task_id,
+        "model": MODEL_NAME,
+        "score": round(score, 4),
+        "success": score >= 0.5,
+        "steps_taken": steps_taken,
+        "passengers_total": obs.passengers_total if obs else 0,
+        "passengers_booked": len(booked_pids),
+        "passengers_unbooked": n_unbooked,
+        "total_cost": round(obs.total_cost, 2) if obs else 0.0,
+        "compensation_budget": obs.compensation_budget if obs else 0.0,
+        "cumulative_reward": round(sum(rewards), 4),
+        "terminal_breakdown": terminal_breakdown,
+        "assignments": assignments,
+    }
+
+    filepath = os.path.join(RESULTS_DIR, f"{task_id}_assignments.json")
+    with open(filepath, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print(f"[SAVE] {filepath} ({len(assignments)} assignments)", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Per-task episode runner
 # ---------------------------------------------------------------------------
@@ -361,6 +426,7 @@ async def run_task(
     score = 0.0
     success = False
     conversation_history: list = []
+    last_obs = None
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
@@ -390,6 +456,7 @@ async def run_task(
                 )
             )
             obs = result.observation
+            last_obs = obs
             reward = result.reward or 0.0
             done = result.done
 
@@ -431,6 +498,14 @@ async def run_task(
             except Exception:
                 pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        if last_obs is not None:
+            try:
+                save_assignments(
+                    task_name, task_id, last_obs,
+                    steps_taken, score, rewards,
+                )
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
