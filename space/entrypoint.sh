@@ -25,8 +25,15 @@ fi
 # ── Enable hf_transfer for fast uploads ─────────────────────
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 
-# ── Start trackio dashboard on port 7860 ────────────────────
-python -c "import trackio; trackio.show(server_port=7860, open_browser=False, block_thread=True)" &
+# ── Start trackio dashboard on port 7860 (default) ──────────
+# trackio.show() defaults to port 7860 — avoid passing kwargs
+# that may not exist in all trackio versions
+python -c "
+import trackio, os
+os.environ['GRADIO_SERVER_PORT'] = '7860'
+os.environ['GRADIO_SERVER_NAME'] = '0.0.0.0'
+trackio.show()
+" &
 TRACKIO_PID=$!
 echo "Trackio dashboard started (PID=$TRACKIO_PID) on :7860"
 

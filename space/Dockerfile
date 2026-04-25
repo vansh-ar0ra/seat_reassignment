@@ -22,9 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Cache-bust: Docker invalidates this layer when the branch HEAD changes
+ADD https://api.github.com/repos/vansh-ar0ra/seat_reassignment/git/refs/heads/single-step /tmp/.git-ref
+
 # Clone project at build time
-RUN git clone ${PROJECT_REPO} /app && \
-    cd /app && git checkout ${PROJECT_REF}
+RUN git clone --branch ${PROJECT_REF} --depth 1 ${PROJECT_REPO} /app
 
 WORKDIR /app
 
