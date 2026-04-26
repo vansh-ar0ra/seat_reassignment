@@ -13,7 +13,7 @@ def build_model_and_tokenizer(
 ) -> tuple:
     """Load a 4-bit quantised model with LoRA adapters via Unsloth.
 
-    Returns (model, tokenizer) ready for GRPO training on A10G (24GB VRAM).
+    Returns (model, tokenizer) ready for GRPO training on A100 (80GB VRAM).
     """
     from unsloth import FastLanguageModel
 
@@ -22,7 +22,7 @@ def build_model_and_tokenizer(
         max_seq_length=max_seq_length,
         load_in_4bit=True,          # 4-bit quantisation
         fast_inference=True,         # enable Unsloth fast-inference kernels
-        gpu_memory_utilization=0.5,  # reserve 50% VRAM for vLLM inference (A10G 24GB)
+        gpu_memory_utilization=0.3,  # Unsloth's initial vLLM — keep low so TRL's vLLM has room
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -45,7 +45,7 @@ def build_grpo_config(
     output_dir: str = "outputs/grpo",
     **overrides,
 ) -> "GRPOConfig":
-    """Build a GRPOConfig with A10G-friendly defaults (24GB VRAM).
+    """Build a GRPOConfig with A100-friendly defaults (80GB VRAM).
 
     Any key in *overrides* replaces the corresponding default.
     """
@@ -61,7 +61,7 @@ def build_grpo_config(
         "num_train_epochs": 1,                    # single pass over dataset
         "use_vllm": True,                         # fast generation via vLLM
         "vllm_mode": "colocate",                  # share GPU between training and vLLM
-        "vllm_gpu_memory_utilization": 0.5,       # reserve 50% VRAM for vLLM inference (A10G 24GB)
+        "vllm_gpu_memory_utilization": 0.5,       # TRL's vLLM for generation (A100 80GB)
         "gradient_checkpointing": True,           # trade compute for VRAM
         "gradient_checkpointing_kwargs": {"use_reentrant": False},  # required for LoRA compat
         "beta": 0.04,                             # KL penalty coefficient for GRPO

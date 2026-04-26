@@ -5,14 +5,14 @@ colorFrom: blue
 colorTo: indigo
 sdk: docker
 app_port: 7860
-hardware: a10g-large
+hardware: a100-large
 sleep_time: 3600
 suggested_storage: small
 ---
 
 # IRROPS Trainer — Flight Rebooking RL Training Space
 
-Training container for the flight rebooking RL agent. Runs SFT, GRPO, and evaluation jobs on an A10G large GPU (24GB VRAM).
+Training container for the flight rebooking RL agent. Runs SFT, GRPO, and evaluation jobs on an A100 large GPU (80GB VRAM).
 
 ## JOB Values
 
