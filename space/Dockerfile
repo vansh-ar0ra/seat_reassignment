@@ -30,23 +30,15 @@ RUN git clone --branch ${PROJECT_REF} --depth 1 ${PROJECT_REPO} /app
 
 WORKDIR /app
 
-# Install Python dependencies
-# 1. Install unsloth first (it pulls its own vllm/trl/unsloth_zoo)
-# 2. Force-pin vllm (with deps) — same range that worked before
-# 3. Force-upgrade ONLY the trl package (--no-deps) so unsloth_zoo
-#    stays at the version compatible with vllm 0.11.x
-# 4. Then extras
-RUN pip install --no-cache-dir unsloth && \
-    pip install --no-cache-dir -r requirements-train.txt && \
-    pip install --no-cache-dir --force-reinstall "vllm>=0.6.0,<0.12.0" && \
-    pip install --no-cache-dir --force-reinstall --no-deps "trl>=0.26.0" && \
-    pip install --no-cache-dir trackio huggingface_hub hf_transfer
+# Single resolution pass — all version pins in requirements-train.txt
+RUN pip install --no-cache-dir --no-build-isolation -r requirements-train.txt
 
-# Log installed versions and verify compatibility at build time
+# Build-time verification of the imports that actually fail at runtime
 RUN python -c "import trl; print('trl', trl.__version__)" && \
     python -c "import vllm; print('vllm', vllm.__version__)" && \
     python -c "import unsloth_zoo; print('unsloth_zoo', unsloth_zoo.__version__)" && \
     python -c "from unsloth import FastLanguageModel; print('unsloth import OK')" && \
+    python -c "from unsloth_zoo.vllm_lora_request import LoRARequest; print('unsloth_zoo+vllm OK')" && \
     python -c "from vllm.sampling_params import GuidedDecodingParams; print('GuidedDecodingParams OK')"
 
 # Trackio dashboard port

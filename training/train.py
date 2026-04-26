@@ -68,10 +68,9 @@ MODES = {
 
 
 def main() -> None:
-    from trl import GRPOTrainer
-
     from training.config import build_grpo_config, build_model_and_tokenizer
     from training.dataset import build_dataset
+    from training.env_grpo_trainer import EnvGRPOTrainer
     from training.rewards import REWARD_FUNCS
     from training.rollout import rollout_func
     from training.space_runner import (
@@ -182,7 +181,9 @@ def main() -> None:
     grpo_config = build_grpo_config(**overrides)
 
     # ── Build trainer ───────────────────────────────────────
-    trainer = GRPOTrainer(
+    # EnvGRPOTrainer subclasses TRL 0.19's GRPOTrainer and overrides
+    # _generate_and_score_completions to drive environment rollouts.
+    trainer = EnvGRPOTrainer(
         model=model,
         processing_class=tokenizer,
         args=grpo_config,
