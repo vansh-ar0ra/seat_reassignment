@@ -35,10 +35,13 @@ if [[ -d "$PROJECT_DIR/.git" ]]; then
     git reset --hard "origin/$PROJECT_REF"
 else
     echo "=== Cloning project ($PROJECT_REF) ==="
-    git clone --depth 1 --branch "$PROJECT_REF" "$GITHUB_REPO_AUTH" "$PROJECT_DIR"
+    if ! git clone --depth 1 --branch "$PROJECT_REF" "$GITHUB_REPO_AUTH" "$PROJECT_DIR"; then
+        echo "FATAL: git clone failed" >&2
+        exit 1
+    fi
 fi
 
-cd "$PROJECT_DIR"
+cd "$PROJECT_DIR" || { echo "FATAL: cannot cd to $PROJECT_DIR" >&2; exit 1; }
 echo "=== Project at $(git rev-parse --short HEAD) ==="
 
 # Install project-local deps if present

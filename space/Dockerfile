@@ -38,5 +38,12 @@ RUN python -c "import trl; print('trl', trl.__version__)" && \
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# HF Spaces runs containers as uid 1000.  Pre-create all dirs it needs.
+RUN useradd -m -u 1000 appuser \
+    && mkdir -p /app/project /data/trackio /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /app /data /home/appuser
+USER appuser
+ENV HOME=/home/appuser
+
 EXPOSE 7860
 CMD ["/app/entrypoint.sh"]
