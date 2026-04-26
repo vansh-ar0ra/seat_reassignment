@@ -53,7 +53,8 @@ class EnvGRPOTrainer(GRPOTrainer):
         device = self.accelerator.device
 
         # --- Run rollout ---
-        prompts = inputs["prompt"]
+        # TRL 0.19 passes a list of dicts (one per sample), not a single dict
+        prompts = [x["prompt"] for x in inputs]
         rollout = self._rollout_func(prompts, self)
 
         raw_prompt_ids = rollout["prompt_ids"]       # list[list[int]]
