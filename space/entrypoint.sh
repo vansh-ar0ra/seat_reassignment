@@ -49,7 +49,7 @@ echo "=== Project at $(git rev-parse --short HEAD) ==="
 # ── Runtime env vars ─────────────────────────────────────────
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 export UNSLOTH_VLLM_NO_FLASHINFER=1
-export VLLM_ATTENTION_BACKEND=TRITON_ATTN
+# Let vllm auto-select attention backend (XFORMERS on T4, FLASH_ATTN on A100+)
 
 # ── Banner ───────────────────────────────────────────────────
 echo "══════════════════════════════════════════════════════════"
