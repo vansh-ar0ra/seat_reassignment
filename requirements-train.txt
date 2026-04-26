@@ -1,5 +1,5 @@
 unsloth==2025.9.6
-unsloth_zoo==2025.9.6
+unsloth_zoo==2025.9.7
 vllm==0.10.2
 trl==0.19.1
 peft>=0.13.0,<0.16.0
