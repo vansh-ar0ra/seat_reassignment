@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRACKIO_DIR=/data/trackio
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates \
+        git curl ca-certificates gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
