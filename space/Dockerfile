@@ -2,50 +2,41 @@
 # Training container for HuggingFace Space (T4 medium)
 # ─────────────────────────────────────────────────────────────
 #
-# Build args:
-#   PROJECT_REPO  — public GitHub URL (default: team repo)
-#   PROJECT_REF   — branch / tag / SHA to checkout (default: single-step)
+# Image = deps + entrypoint only.  Project code is pulled at
+# container start by entrypoint.sh → restart ≈ 30 s vs rebuild ≈ 8 min.
 #
-# For a PRIVATE repo, replace the git-clone block with:
-#   RUN --mount=type=secret,id=GITHUB_TOKEN \
-#       git clone https://$(cat /run/secrets/GITHUB_TOKEN)@github.com/vansh-ar0ra/seat_reassignment.git /app \
-#       && cd /app && git checkout ${PROJECT_REF}
+# Rebuild only when:
+#   • requirements-train.txt changes
+#   • Dockerfile or entrypoint.sh changes
 # ─────────────────────────────────────────────────────────────
 
 FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
 
-ARG PROJECT_REPO=https://github.com/vansh-ar0ra/seat_reassignment.git
-ARG PROJECT_REF=single-step
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    TRACKIO_DIR=/data/trackio
 
-# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
-
-# Cache-bust: Docker invalidates this layer when the branch HEAD changes
-ADD https://api.github.com/repos/vansh-ar0ra/seat_reassignment/git/refs/heads/single-step /tmp/.git-ref
-
-# Clone project at build time
-RUN git clone --branch ${PROJECT_REF} --depth 1 ${PROJECT_REPO} /app
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Single resolution pass — all version pins in requirements-train.txt
-RUN pip install --no-cache-dir --no-build-isolation -r requirements-train.txt
+# Layer 1: deps — rebuilt only when requirements-train.txt changes
+COPY requirements-train.txt /app/requirements-train.txt
+RUN pip install --no-cache-dir --no-build-isolation -r /app/requirements-train.txt
 
-# Build-time verification of the imports that actually fail at runtime
+# Build-time verification — fail fast if pins are broken
+# (unsloth/unsloth_zoo need a GPU at import time, so only check vllm/trl here)
 RUN python -c "import trl; print('trl', trl.__version__)" && \
     python -c "import vllm; print('vllm', vllm.__version__)" && \
-    python -c "import unsloth_zoo; print('unsloth_zoo', unsloth_zoo.__version__)" && \
-    python -c "from unsloth import FastLanguageModel; print('unsloth import OK')" && \
-    python -c "from unsloth_zoo.vllm_lora_request import LoRARequest; print('unsloth_zoo+vllm OK')" && \
+    python -c "from vllm.adapter_commons.request import AdapterRequest; print('vllm.adapter_commons OK')" && \
     python -c "from vllm.sampling_params import GuidedDecodingParams; print('GuidedDecodingParams OK')"
 
-# Trackio dashboard port
-EXPOSE 7860
-
-# Copy entrypoint (lives in space/ but we need it at /app root for the image)
+# Layer 2: entrypoint — code is NOT in the image, pulled at runtime
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+EXPOSE 7860
+CMD ["/app/entrypoint.sh"]
