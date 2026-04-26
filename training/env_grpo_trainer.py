@@ -152,6 +152,17 @@ class EnvGRPOTrainer(GRPOTrainer):
             advantages = (rewards - mean_g.repeat(1, num_generations).view(-1))
             std_flat = std_g.repeat(1, num_generations).view(-1)
             advantages = advantages / (std_flat + 1e-4)
+
+            # Zero-variance detection
+            zero_var_groups = (std_g.squeeze(1) < 1e-6).sum().item()
+            total_groups = grouped.shape[0]
+            self._metrics["rewards/zero_var_groups"] = zero_var_groups
+            self._metrics["rewards/zero_var_ratio"] = zero_var_groups / max(total_groups, 1)
+            if zero_var_groups > 0:
+                logger.warning(
+                    "Zero-variance groups: %d/%d — GRPO has no gradient signal for these",
+                    zero_var_groups, total_groups,
+                )
         else:
             advantages = rewards - rewards.mean()
             std_r = rewards.std()

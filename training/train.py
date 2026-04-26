@@ -2,7 +2,7 @@
 """GRPO training entry point with smoke / phase-1 / phase-2 modes.
 
 Usage:
-    python training/train.py --smoke          # 2 easy, 2 steps — sanity check
+    python training/train.py --smoke          # 8 easy, 2 steps — sanity check
     python training/train.py --phase 1        # 50 easy, 200 steps → push grpo-phase1
     python training/train.py --phase 2        # 50 easy + 100 med + 100 hard, 400 steps → push grpo-phase2
 """
@@ -207,14 +207,27 @@ def main() -> None:
     trainer.train(resume_from_checkpoint=resume_path)
 
     # ── Save and push ───────────────────────────────────────
-    print("Saving final model...")
-    trainer.save_model()
-    print(f"Training complete. Model saved to {mode['output_dir']}")
+    # Save adapter to disk FIRST — don't lose work to a failed push
+    local_adapter_path = Path(mode["output_dir"]) / "final_adapter"
+    print(f"Saving final adapter to {local_adapter_path} ...")
+    trainer.save_model(str(local_adapter_path))
+    print(f"Adapter saved to disk: {local_adapter_path}")
 
     if push_repo and grpo_config.push_to_hub:
         print(f"Pushing to Hub: {push_repo}")
-        trainer.push_to_hub()
+        from training.space_runner import push_with_retry
+        push_with_retry(trainer.push_to_hub)
         print("Push complete.")
+
+    # ── Trackio phase-boundary marker ────────────────────────
+    try:
+        import trackio
+        trackio.log({
+            f"phase/{mode_key}/completed": 1,
+            f"phase/{mode_key}/final_step": mode["max_steps"],
+        })
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
