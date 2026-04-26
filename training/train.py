@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
+
+# Single-GPU: TRL's GRPOTrainer uses vLLM with distributed_executor_backend='external_launcher',
+# which expects these env vars (normally set by torchrun/accelerate).
+os.environ.setdefault("RANK", "0")
+os.environ.setdefault("WORLD_SIZE", "1")
+os.environ.setdefault("LOCAL_RANK", "0")
 
 logger = logging.getLogger("flight_rebooking.train")
 
