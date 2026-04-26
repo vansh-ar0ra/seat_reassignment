@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# Training container for HuggingFace Space (T4 medium)
+# Training container for HuggingFace Space (A10G large)
 # ─────────────────────────────────────────────────────────────
 #
 # Image = deps + entrypoint only.  Project code is pulled at

@@ -13,16 +13,16 @@ def build_model_and_tokenizer(
 ) -> tuple:
     """Load a 4-bit quantised model with LoRA adapters via Unsloth.
 
-    Returns (model, tokenizer) ready for GRPO training on a single T4.
+    Returns (model, tokenizer) ready for GRPO training on A10G (24GB VRAM).
     """
     from unsloth import FastLanguageModel
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name,
         max_seq_length=max_seq_length,
-        load_in_4bit=True,          # 4-bit quantisation to fit T4 16GB
+        load_in_4bit=True,          # 4-bit quantisation
         fast_inference=True,         # enable Unsloth fast-inference kernels
-        gpu_memory_utilization=0.4,  # reserve 40% VRAM for vLLM inference
+        gpu_memory_utilization=0.5,  # reserve 50% VRAM for vLLM inference (A10G 24GB)
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -45,15 +45,15 @@ def build_grpo_config(
     output_dir: str = "outputs/grpo",
     **overrides,
 ) -> "GRPOConfig":
-    """Build a GRPOConfig with T4-friendly defaults.
+    """Build a GRPOConfig with A10G-friendly defaults (24GB VRAM).
 
     Any key in *overrides* replaces the corresponding default.
     """
     from trl import GRPOConfig
 
     defaults = {
-        "per_device_train_batch_size": 1,        # T4 16GB fits 1 sample at a time
-        "gradient_accumulation_steps": 8,         # effective batch = 1 × 8 = 8
+        "per_device_train_batch_size": 1,        # Unsloth bumps to num_generations anyway
+        "gradient_accumulation_steps": 8,         # effective batch = 4 × 8 = 32
         "num_generations": 4,                     # 4 completions per prompt for GRPO variance
         "learning_rate": 5e-6,                    # conservative LR for LoRA fine-tuning
         "max_prompt_length": 2048,                # system prompt + env state fits in 2K tokens
@@ -61,7 +61,7 @@ def build_grpo_config(
         "num_train_epochs": 1,                    # single pass over dataset
         "use_vllm": True,                         # fast generation via vLLM
         "vllm_mode": "colocate",                  # share GPU between training and vLLM
-        "vllm_gpu_memory_utilization": 0.4,       # reserve 40% VRAM for vLLM inference
+        "vllm_gpu_memory_utilization": 0.5,       # reserve 50% VRAM for vLLM inference (A10G 24GB)
         "gradient_checkpointing": True,           # trade compute for VRAM
         "gradient_checkpointing_kwargs": {"use_reentrant": False},  # required for LoRA compat
         "beta": 0.04,                             # KL penalty coefficient for GRPO
