@@ -37,11 +37,12 @@ if str(_REPO) not in sys.path:
 
 MODES = {
     "smoke": {
-        "n_easy": 2,
+        "n_easy": 8,
         "n_medium": 0,
         "n_hard": 0,
         "max_steps": 2,
         "save_steps": 1,
+        "gradient_accumulation_steps": 1,  # small dataset — keep total batch ≤ n_easy
         "init_from": "sft",
         "push_to": None,  # no push for smoke
         "output_dir": "outputs/grpo-smoke",
@@ -178,6 +179,8 @@ def main() -> None:
         "save_steps": mode["save_steps"],
         "output_dir": mode["output_dir"],
     }
+    if "gradient_accumulation_steps" in mode:
+        overrides["gradient_accumulation_steps"] = mode["gradient_accumulation_steps"]
     if push_repo:
         overrides["push_to_hub"] = True
         overrides["hub_model_id"] = push_repo
