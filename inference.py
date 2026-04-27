@@ -807,6 +807,19 @@ def _find_nested_json(text: str) -> Optional[dict]:
 # LLM call via HuggingFace router (OpenAI-compatible endpoint)
 # ---------------------------------------------------------------------------
 
+def _compact_assistant(raw_response: Optional[str], action: dict) -> str:
+    """Return a compact assistant message for conversation history.
+
+    Strips the verbose reasoning XML tags and keeps only the <action> block,
+    so that replayed history doesn't bloat the prompt.
+    """
+    if raw_response:
+        action_content = extract_xml_tag(raw_response, "action")
+        if action_content:
+            return f"<action>\n{action_content}\n</action>"
+    return f"<action>\n{json.dumps(action)}\n</action>"
+
+
 def get_agent_action(
     client: OpenAI, obs, conversation_history: list, task_id: str
 ) -> Optional[dict]:
@@ -833,14 +846,15 @@ def get_agent_action(
     else:
         messages.append({"role": "user", "content": format_main_task(task_id)})
 
-        # Include full conversation history — the model needs all data
-        # to build a complete plan (manifest + inventory from prior steps)
+        # Build conversation history with prompt-size control:
+        # - Assistant messages: strip reasoning tags, keep only <action>
+        # - User messages (tool results): always included in full
         for i, item in enumerate(conversation_history):
-            # Include the raw LLM response if available, otherwise the action JSON
-            assistant_content = item.get("raw_response")
-            if not assistant_content:
-                assistant_content = json.dumps(item["action"])
-            messages.append({"role": "assistant", "content": assistant_content})
+            # Assistant turn: action only, no CoT replay
+            messages.append({
+                "role": "assistant",
+                "content": _compact_assistant(item.get("raw_response"), item["action"]),
+            })
 
             user_parts = [format_result(item)]
             if i == len(conversation_history) - 1:
