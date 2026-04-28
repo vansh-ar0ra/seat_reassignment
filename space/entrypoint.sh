@@ -10,7 +10,7 @@ set -uo pipefail
 
 # ── HF token login ──────────────────────────────────────────
 if [[ -n "${HF_TOKEN:-}" ]]; then
-    python -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
+    python3 -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
     echo "Logged in to Hugging Face Hub."
 else
     echo "WARNING: HF_TOKEN not set — push-to-hub will fail."
@@ -59,8 +59,8 @@ echo "  JOB          = ${JOB:-idle}"
 echo "  PROJECT_REF  = ${PROJECT_REF}"
 echo "  COMMIT       = $(git rev-parse --short HEAD)"
 echo "  GPU          = $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none')"
-python -c "import trl; print(f'  trl            = {trl.__version__}')" 2>/dev/null || true
-python -c "import vllm; print(f'  vllm           = {vllm.__version__}')" 2>/dev/null || true
+python3 -c "import trl; print(f'  trl            = {trl.__version__}')" 2>/dev/null || true
+python3 -c "import vllm; print(f'  vllm           = {vllm.__version__}')" 2>/dev/null || true
 echo "══════════════════════════════════════════════════════════"
 
 # ── Wait for env Space to be reachable ──────────────────────
@@ -78,7 +78,7 @@ fi
 
 # ── Start trackio dashboard on port 7860 ─────────────────────
 mkdir -p "${TRACKIO_DIR:-/data/trackio}"
-python -c "
+python3 -c "
 import trackio, os
 os.environ['GRADIO_SERVER_PORT'] = '7860'
 os.environ['GRADIO_SERVER_NAME'] = '0.0.0.0'
@@ -97,27 +97,27 @@ case "${JOB:-idle}" in
 
     sft)
         echo "Starting SFT training..."
-        python training/sft.py || echo "[SFT] exited with code $?" >&2
+        python3 training/sft.py || echo "[SFT] exited with code $?" >&2
         ;;
 
     grpo-smoke)
         echo "Starting GRPO smoke test (2 easy, 2 steps)..."
-        python training/train.py --smoke || echo "[GRPO-SMOKE] exited with code $?" >&2
+        python3 training/train.py --smoke || echo "[GRPO-SMOKE] exited with code $?" >&2
         ;;
 
     grpo-p1)
         echo "Starting GRPO Phase 1 (50 easy, 200 steps)..."
-        python training/train.py --phase 1 || echo "[GRPO-P1] exited with code $?" >&2
+        python3 training/train.py --phase 1 || echo "[GRPO-P1] exited with code $?" >&2
         ;;
 
     grpo-p2)
         echo "Starting GRPO Phase 2 (50 easy + 100 med + 100 hard, 400 steps)..."
-        python training/train.py --phase 2 || echo "[GRPO-P2] exited with code $?" >&2
+        python3 training/train.py --phase 2 || echo "[GRPO-P2] exited with code $?" >&2
         ;;
 
     eval)
         echo "Starting evaluation..."
-        python training/eval.py --sft --phase1 --phase2 || echo "[EVAL] exited with code $?" >&2
+        python3 training/eval.py --sft --phase1 --phase2 || echo "[EVAL] exited with code $?" >&2
         ;;
 
     *)
