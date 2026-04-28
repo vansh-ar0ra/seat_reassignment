@@ -30,8 +30,8 @@ COPY requirements-train.txt /app/requirements-train.txt
 RUN pip install --no-cache-dir --no-build-isolation -r /app/requirements-train.txt
 
 # Build-time verification — fail fast if pins are broken
-RUN python -c "import trl; print('trl', trl.__version__)" && \
-    python -c "import vllm; print('vllm', vllm.__version__)"
+RUN python3 -c "import trl; print('trl', trl.__version__)" && \
+    python3 -c "import vllm; print('vllm', vllm.__version__)"
 
 # Layer 2: entrypoint — code is NOT in the image, pulled at runtime
 COPY entrypoint.sh /app/entrypoint.sh
