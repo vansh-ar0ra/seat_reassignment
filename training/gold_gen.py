@@ -37,7 +37,7 @@ if str(_REPO) not in sys.path:
 
 from google import genai
 
-from server.environment import FlightRebookingEnvironment
+from client import FlightRebookingEnv
 from training.smoke_test import SYSTEM_PROMPT, run_episode
 
 # ---------------------------------------------------------------------------
@@ -154,20 +154,24 @@ def rate_limited_policy(inner_policy):
 # Run single scenario
 # ---------------------------------------------------------------------------
 
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
+
+
 def run_single_scenario(
     task_id: str,
     client: genai.Client,
     model_name: str,
 ) -> Dict[str, Any]:
     """Run one episode for a given task_id and return the result dict."""
-    env = FlightRebookingEnvironment(debug=False, data_dir=str(DATA_SFT_DIR))
-    obs = env.reset(seed=0, task_id=task_id)
+    with FlightRebookingEnv(base_url=ENV_URL).sync() as env_client:
+        reset_result = env_client.reset(task_id=task_id, seed=0)
+        obs = reset_result.observation
 
-    policy = rate_limited_policy(make_gemini_policy(client, model_name))
-    result = run_episode(env, obs, policy, SYSTEM_PROMPT)
-    result["task_id"] = task_id
-    result["seed"] = 0
-    return result
+        policy = rate_limited_policy(make_gemini_policy(client, model_name))
+        result = run_episode(env_client, obs, policy, SYSTEM_PROMPT)
+        result["task_id"] = task_id
+        result["seed"] = 0
+        return result
 
 
 # ---------------------------------------------------------------------------

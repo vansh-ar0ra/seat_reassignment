@@ -1,8 +1,9 @@
 """TRL-compatible rollout function for the Flight Rebooking environment.
 
 Exports ``rollout_func(prompts, trainer, **kwargs)`` which drives multi-turn
-episodes against the env, builds token-level completion masks (model tokens = 1,
-env/tool tokens = 0), and returns the dict TRL's GRPOTrainer expects.
+episodes against the remote env (via WebSocket client), builds token-level
+completion masks (model tokens = 1, env/tool tokens = 0), and returns the dict
+TRL's GRPOTrainer expects.
 
 The function also returns five per-episode reward component keys that map 1-to-1
 with the environment's grader sub-scores:
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -25,16 +27,33 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+from client import FlightRebookingEnv
 from models import FlightRebookingAction
-from server.environment import FlightRebookingEnvironment
 
 logger = logging.getLogger("flight_rebooking.rollout")
+
+# ---------------------------------------------------------------------------
+# Remote env configuration
+# ---------------------------------------------------------------------------
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
+
+# Module-level singleton, lazy-initialized (sync wrapper)
+_env_client = None
+
+
+def _get_env():
+    """Return a persistent remote env client (lazy-initialized, sync)."""
+    global _env_client
+    if _env_client is None:
+        _env_client = FlightRebookingEnv(base_url=ENV_URL).sync()
+        _env_client.__enter__()
+    return _env_client
+
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 MAX_TURNS = 8
-MAX_NEW_TOKENS = 4096
 TEMPERATURE = 0.7
 TOP_P = 0.9
 
@@ -80,6 +99,34 @@ CONSTRAINTS (priority order):
 
 WORKFLOW: get_full_manifest → get_flight_inventory → submit_plan → finalize_plan.
 Think step-by-step, then output: <action>{"tool_name":"...","args":{...}}</action>"""
+
+# Concise variant for gold trajectory generation (SFT training data).
+# Gemini produces short, action-focused responses that a small model can imitate.
+GOLD_SYSTEM_PROMPT = """\
+You are an airline rebooking agent. A flight was cancelled; rebook all passengers onto alternative flights. You place passengers into cabin buckets (not specific seats).
+
+TOOLS (call one per turn inside <action> tags):
+1. get_full_manifest() — returns all passengers with priority_tier, original_cabin, group_id, group_integrity, ssr_flags, downstream_deadline.
+2. get_flight_inventory() — returns flights with cabin_availability and supports_ssr.
+3. submit_plan(assignments) — submit COMPLETE plan: {"PAX-001":{"flight_id":"FL-201","cabin":"economy"},...}. ONE shot, no revisions.
+4. finalize_plan() — lock in plan for final grading.
+
+CONSTRAINTS (priority order):
+- SSR COMPATIBILITY (HARD): ssr_flags passengers only on flights supporting those flags.
+- HARD GROUPS (HARD): all "hard" group members on the SAME flight.
+- DEADLINES (HARD): arrival_time <= downstream_deadline.
+- COVERAGE (0.35): rebook every passenger.
+- CABIN MATCH (0.15): match original cabin; higher-priority passengers weighted more.
+- SOFT GROUPS (0.15): keep "soft" groups together when possible.
+
+WORKFLOW: get_full_manifest → get_flight_inventory → submit_plan → finalize_plan.
+
+CRITICAL: Be maximally concise.
+- For information-gathering steps (manifest/inventory): output ONLY the <action> tag, nothing else.
+- For the planning step: write a brief 2-3 sentence rationale, then the <action> tag with your complete assignment JSON.
+- For finalize: output ONLY the <action> tag.
+- Never use verbose XML reasoning tags. No <observations>, <passenger_analysis>, <strategy>, <tradeoff_analysis>, <reconsideration>.
+- Every response must contain exactly one <action>{"tool_name":"...","args":{...}}</action> block."""
 
 
 # ╔═══════════════════════════════════════════════════════════════╗
@@ -262,7 +309,7 @@ def _fallback_action(obs: Any) -> dict:
 
 
 # ╔═══════════════════════════════════════════════════════════════╗
-# ║  vLLM generation via the trainer                             ║
+# ║  vLLM generation via generate_rollout_completions            ║
 # ╚═══════════════════════════════════════════════════════════════╝
 
 
@@ -270,78 +317,26 @@ def _generate_via_trainer(
     trainer: Any,
     tokenizer: Any,
     messages: list[dict],
-) -> tuple[list[int], list[int], list[float]]:
-    """Generate a single completion through the trainer's vLLM client.
+) -> tuple[list[int], list[int], list[float], str]:
+    """Generate a single completion through the trainer's vLLM via TRL 0.29+.
 
-    Returns (prompt_token_ids, completion_token_ids, per_token_logprobs).
+    Returns (prompt_token_ids, completion_token_ids, per_token_logprobs, gen_text).
     """
+    from trl.extras.vllm_utils import generate_rollout_completions
+
     prompt_text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
 
-    # Use vLLM via the trainer's generation infrastructure
-    if hasattr(trainer, "vllm_generation") and trainer.vllm_generation is not None:
-        from vllm import SamplingParams
+    gen_out = generate_rollout_completions(trainer, [prompt_text])[0]
+    prompt_ids = gen_out["prompt_ids"]
+    completion_ids = gen_out["completion_ids"]
+    logprobs = gen_out["logprobs"]
+    gen_text = gen_out.get("text") or tokenizer.decode(
+        completion_ids, skip_special_tokens=True
+    )
 
-        sampling_params = SamplingParams(
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            max_tokens=MAX_NEW_TOKENS,
-            logprobs=1,
-        )
-        outputs = trainer.vllm_generation.generate(
-            prompts=None,
-            sampling_params=sampling_params,
-            prompt_token_ids=[prompt_ids],
-        )
-        output = outputs[0].outputs[0]
-        completion_ids = list(output.token_ids)
-        logprobs = []
-        for lp_dict in output.logprobs:
-            # Each logprobs entry is a dict {token_id: Logprob}; pick the sampled one
-            if lp_dict:
-                logprobs.append(next(iter(lp_dict.values())).logprob)
-            else:
-                logprobs.append(0.0)
-    else:
-        # Fallback: use model.generate directly (for testing without vLLM)
-        import torch
-
-        model = trainer.model
-        device = next(model.parameters()).device
-        input_ids = torch.tensor([prompt_ids], device=device)
-
-        with torch.no_grad():
-            output = model.generate(
-                input_ids,
-                max_new_tokens=MAX_NEW_TOKENS,
-                temperature=TEMPERATURE,
-                top_p=TOP_P,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-                return_dict_in_generate=True,
-                output_scores=True,
-            )
-
-        full_ids = output.sequences[0].tolist()
-        completion_ids = full_ids[len(prompt_ids):]
-
-        # Compute per-token log-probs from scores
-        logprobs = []
-        if output.scores:
-            for step_idx, score_tensor in enumerate(output.scores):
-                log_probs_dist = torch.log_softmax(score_tensor[0], dim=-1)
-                if step_idx < len(completion_ids):
-                    tok = completion_ids[step_idx]
-                    logprobs.append(log_probs_dist[tok].item())
-                else:
-                    logprobs.append(0.0)
-        # Pad if needed
-        while len(logprobs) < len(completion_ids):
-            logprobs.append(0.0)
-
-    return prompt_ids, completion_ids, logprobs
+    return prompt_ids, completion_ids, logprobs, gen_text
 
 
 # ╔═══════════════════════════════════════════════════════════════╗
@@ -355,7 +350,7 @@ def _play_episode(
     task_id: str,
     seed: int,
 ) -> dict[str, Any]:
-    """Run one multi-turn episode.  Mirrors the Step-2 smoke_test loop.
+    """Run one multi-turn episode against the remote env.
 
     Returns a dict with:
         prompt_ids:       list[int]  — initial prompt token IDs
@@ -365,8 +360,9 @@ def _play_episode(
         breakdown:        dict       — grader component scores
         grader_score:     float
     """
-    env = FlightRebookingEnvironment(debug=False)
-    obs = env.reset(seed=seed, task_id=task_id)
+    env = _get_env()
+    result = env.reset(task_id=task_id, seed=seed)
+    obs = result.observation
 
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -408,32 +404,26 @@ def _play_episode(
             messages.append({"role": "user", "content": user_msg})
 
             # Tokenize the env feedback (user message) — these tokens get mask=0
-            # We tokenize just the appended portion by computing the delta
             full_text_before_gen = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
             env_feedback_ids = tokenizer.encode(full_text_before_gen, add_special_tokens=False)
-            # The new env tokens are everything beyond the previous prompt+completion
-            # We track this as the user message tokens
             env_token_count = len(env_feedback_ids) - len(prompt_ids) - len(all_completion_ids)
             if env_token_count > 0:
-                # These tokens are env feedback — mask them out
                 all_completion_ids.extend(env_feedback_ids[-env_token_count:])
                 all_logprobs.extend([0.0] * env_token_count)
                 all_env_mask.extend([0] * env_token_count)
 
-        # Generate
+        # Generate via TRL's vLLM
         try:
-            _, gen_ids, gen_logprobs = _generate_via_trainer(
+            _, gen_ids, gen_logprobs, gen_text = _generate_via_trainer(
                 trainer, tokenizer, messages
             )
         except Exception as exc:
             logger.warning("Generation error: %s", exc)
             gen_ids = []
             gen_logprobs = []
-
-        # Decode for parsing
-        gen_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+            gen_text = ""
 
         # Append model tokens — these get mask=1
         all_completion_ids.extend(gen_ids)
@@ -457,12 +447,14 @@ def _play_episode(
         # Add assistant message to conversation
         messages.append({"role": "assistant", "content": gen_text})
 
-        # Step the environment
+        # Step the remote environment
         action = FlightRebookingAction(
             tool_name=parsed["tool_name"],
             args=parsed.get("args", {}),
         )
-        obs = env.step(action)
+        step_result = env.step(action)
+        obs = step_result.observation
+        done = step_result.done
 
         history.append({
             "action": parsed,
@@ -471,12 +463,14 @@ def _play_episode(
             "reward_reason": obs.reward_reason,
         })
 
-        if obs.done:
+        if done or obs.done:
             break
 
     # Force finalize if not done
     if not obs.done:
-        obs = env.step(FlightRebookingAction(tool_name="finalize_plan", args={}))
+        action = FlightRebookingAction(tool_name="finalize_plan", args={})
+        step_result = env.step(action)
+        obs = step_result.observation
 
     # Extract terminal scores
     grader_score = 0.0

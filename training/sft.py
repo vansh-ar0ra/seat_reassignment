@@ -3,7 +3,7 @@
 
 Loads gold trajectories from the Hub (Vanshar0ra/irrops-gold-trajectories)
 or falls back to local training/data/gold_trajectories.jsonl.  Uses TRL's
-SFTTrainer with chat-template formatting on Unsloth-quantised Qwen.
+SFTTrainer with chat-template formatting on 4-bit quantised Qwen via PEFT.
 
 Usage:
     python training/sft.py
@@ -160,7 +160,7 @@ def main() -> None:
     # ── Trainer ─────────────────────────────────────────────
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         args=sft_config,
     )

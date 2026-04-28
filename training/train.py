@@ -3,7 +3,7 @@
 
 Usage:
     python training/train.py --smoke          # 8 easy, 2 steps — sanity check
-    python training/train.py --phase 1        # 50 easy, 200 steps → push grpo-phase1
+    python training/train.py --phase 1        # 200 easy, 100 steps → push grpo-phase1
     python training/train.py --phase 2        # 50 easy + 100 med + 100 hard, 400 steps → push grpo-phase2
 """
 
@@ -11,15 +11,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
-
-# Single-GPU: TRL's GRPOTrainer uses vLLM with distributed_executor_backend='external_launcher',
-# which expects these env vars (normally set by torchrun/accelerate).
-os.environ.setdefault("RANK", "0")
-os.environ.setdefault("WORLD_SIZE", "1")
-os.environ.setdefault("LOCAL_RANK", "0")
 
 logger = logging.getLogger("flight_rebooking.train")
 
@@ -48,10 +41,10 @@ MODES = {
         "output_dir": "outputs/grpo-smoke",
     },
     "phase1": {
-        "n_easy": 50,
+        "n_easy": 200,
         "n_medium": 0,
         "n_hard": 0,
-        "max_steps": 200,
+        "max_steps": 100,
         "save_steps": 25,
         "init_from": "sft",
         "push_to": "grpo-p1",
@@ -76,9 +69,10 @@ MODES = {
 
 
 def main() -> None:
+    from trl import GRPOTrainer
+
     from training.config import build_grpo_config, build_model_and_tokenizer
     from training.dataset import build_dataset
-    from training.env_grpo_trainer import EnvGRPOTrainer
     from training.rewards import REWARD_FUNCS
     from training.rollout import rollout_func
     from training.space_runner import (
@@ -139,25 +133,8 @@ def main() -> None:
             from peft import PeftModel
 
             print(f"Loading adapter from Hub: {init_repo}")
-            model = PeftModel.from_pretrained(model, init_repo)
-            model = model.merge_and_unload()
-            print("Adapter merged successfully.")
-            # Re-apply LoRA for GRPO training
-            from training.config import DEFAULT_LORA_RANK
-            from unsloth import FastLanguageModel
-
-            model = FastLanguageModel.get_peft_model(
-                model,
-                r=DEFAULT_LORA_RANK,
-                target_modules=[
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
-                ],
-                lora_alpha=DEFAULT_LORA_RANK,
-                lora_dropout=0,
-                use_gradient_checkpointing="unsloth",
-                random_state=42,
-            )
+            model = PeftModel.from_pretrained(model, init_repo, is_trainable=True)
+            print("Adapter loaded (trainable).")
         except Exception as exc:
             logger.warning(
                 "Could not load adapter from %s (%s) — training from base model",
@@ -191,9 +168,8 @@ def main() -> None:
     grpo_config = build_grpo_config(**overrides)
 
     # ── Build trainer ───────────────────────────────────────
-    # EnvGRPOTrainer subclasses TRL 0.19's GRPOTrainer and overrides
-    # _generate_and_score_completions to drive environment rollouts.
-    trainer = EnvGRPOTrainer(
+    # Stock TRL 0.29+ GRPOTrainer with environment rollout support.
+    trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
         args=grpo_config,

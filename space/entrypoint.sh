@@ -51,7 +51,6 @@ echo "=== Project at $(git rev-parse --short HEAD) ==="
 
 # ── Runtime env vars ─────────────────────────────────────────
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
-export UNSLOTH_VLLM_NO_FLASHINFER=1
 # Let vllm auto-select attention backend (FLASH_ATTN on A100)
 
 # ── Banner ───────────────────────────────────────────────────
@@ -62,8 +61,20 @@ echo "  COMMIT       = $(git rev-parse --short HEAD)"
 echo "  GPU          = $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none')"
 python -c "import trl; print(f'  trl            = {trl.__version__}')" 2>/dev/null || true
 python -c "import vllm; print(f'  vllm           = {vllm.__version__}')" 2>/dev/null || true
-python -c "from vllm.sampling_params import GuidedDecodingParams; print('  GuidedDecoding = OK')" 2>/dev/null || echo "  GuidedDecoding = MISSING"
 echo "══════════════════════════════════════════════════════════"
+
+# ── Wait for env Space to be reachable ──────────────────────
+if [[ -n "${ENV_URL:-}" ]] && [[ "${JOB:-}" =~ ^(grpo-smoke|grpo-p1|grpo-p2|eval)$ ]]; then
+    echo "Pinging env Space at $ENV_URL ..."
+    for i in {1..30}; do
+        if curl -fsS "${ENV_URL}/health" > /dev/null 2>&1; then
+            echo "Env Space healthy."
+            break
+        fi
+        echo "  attempt $i/30: env not ready, sleeping 10s..."
+        sleep 10
+    done
+fi
 
 # ── Start trackio dashboard on port 7860 ─────────────────────
 mkdir -p "${TRACKIO_DIR:-/data/trackio}"

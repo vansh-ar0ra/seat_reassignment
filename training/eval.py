@@ -114,11 +114,15 @@ def load_model_for_eval(
 
 
 def main() -> None:
+    import os
+
     import torch
 
-    from server.environment import FlightRebookingEnvironment
+    from client import FlightRebookingEnv
     from training.smoke_test import SYSTEM_PROMPT, generate_response, run_episode
     from training.space_runner import init_trackio
+
+    ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
 
     parser = argparse.ArgumentParser(description="Evaluate checkpoints")
     parser.add_argument("--baseline", action="store_true", help="Evaluate base model")
@@ -201,20 +205,21 @@ def main() -> None:
 
         ckpt_results: Dict[str, List[Dict]] = {}
 
-        for tier in args.tiers:
-            tier_results: List[Dict] = []
-            for ep_idx in range(args.episodes):
-                seed = ep_idx
-                task_id = f"{tier}_{ep_idx:03d}"
+        with FlightRebookingEnv(base_url=ENV_URL).sync() as env_client:
+            for tier in args.tiers:
+                tier_results: List[Dict] = []
+                for ep_idx in range(args.episodes):
+                    seed = ep_idx
+                    task_id = f"{tier}_{ep_idx:03d}"
 
-                env = FlightRebookingEnvironment(debug=False)
-                obs = env.reset(seed=seed, task_id=task_id)
-                result = run_episode(env, obs, policy, SYSTEM_PROMPT)
-                result["checkpoint"] = ckpt_name
-                result["seed"] = seed
-                tier_results.append(result)
+                    reset_result = env_client.reset(task_id=task_id, seed=seed)
+                    obs = reset_result.observation
+                    result = run_episode(env_client, obs, policy, SYSTEM_PROMPT)
+                    result["checkpoint"] = ckpt_name
+                    result["seed"] = seed
+                    tier_results.append(result)
 
-            ckpt_results[tier] = tier_results
+                ckpt_results[tier] = tier_results
 
         all_results[ckpt_name] = ckpt_results
 

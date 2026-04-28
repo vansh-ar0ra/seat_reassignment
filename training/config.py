@@ -1,5 +1,7 @@
 """Training configuration: hyperparameters, paths, model settings."""
 
+import torch
+
 DEFAULT_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 FALLBACK_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 DEFAULT_MAX_SEQ_LENGTH = 4096
@@ -11,32 +13,42 @@ def build_model_and_tokenizer(
     max_seq_length: int = DEFAULT_MAX_SEQ_LENGTH,
     lora_rank: int = DEFAULT_LORA_RANK,
 ) -> tuple:
-    """Load a 4-bit quantised model with LoRA adapters via Unsloth.
+    """Load a 4-bit quantised model with LoRA adapters via plain HF + PEFT.
 
     Returns (model, tokenizer) ready for GRPO training on A100 (80GB VRAM).
     """
-    from unsloth import FastLanguageModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name,
-        max_seq_length=max_seq_length,
-        load_in_4bit=True,          # 4-bit quantisation
-        fast_inference=True,         # enable Unsloth fast-inference kernels
-        gpu_memory_utilization=0.3,  # Unsloth's initial vLLM — keep low so TRL's vLLM has room
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
     )
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=lora_rank,                              # LoRA rank (higher = more capacity)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+    )
+
+    lora_config = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_rank,
+        lora_dropout=0,
         target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
         ],
-        lora_alpha=lora_rank,                      # alpha = rank is standard practice
-        lora_dropout=0,                            # Unsloth optimised, no dropout needed
-        use_gradient_checkpointing="unsloth",      # saves ~30% VRAM
-        random_state=42,
+        bias="none",
+        task_type="CAUSAL_LM",
     )
+    model = get_peft_model(model, lora_config)
 
     return model, tokenizer
 
@@ -52,16 +64,16 @@ def build_grpo_config(
     from trl import GRPOConfig
 
     defaults = {
-        "per_device_train_batch_size": 1,        # Unsloth bumps to num_generations anyway
+        "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": 8,         # effective batch = 4 × 8 = 32
         "num_generations": 4,                     # 4 completions per prompt for GRPO variance
-        "learning_rate": 5e-6,                    # conservative LR for LoRA fine-tuning
+        "learning_rate": 2e-6,                    # conservative LR for LoRA fine-tuning
         "max_prompt_length": 2048,                # system prompt + env state fits in 2K tokens
         "max_completion_length": 1024,            # model output cap per turn
         "num_train_epochs": 1,                    # single pass over dataset
         "use_vllm": True,                         # fast generation via vLLM
         "vllm_mode": "colocate",                  # share GPU between training and vLLM
-        "vllm_gpu_memory_utilization": 0.5,       # TRL's vLLM for generation (A100 80GB)
+        "vllm_gpu_memory_utilization": 0.3,       # single vLLM, keep headroom for grads + optimizer
         "gradient_checkpointing": True,           # trade compute for VRAM
         "gradient_checkpointing_kwargs": {"use_reentrant": False},  # required for LoRA compat
         "beta": 0.04,                             # KL penalty coefficient for GRPO
