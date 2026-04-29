@@ -73,6 +73,7 @@ def build_grpo_config(
         "use_vllm": True,                         # fast generation via vLLM
         "vllm_mode": "colocate",                  # share GPU between training and vLLM
         "vllm_gpu_memory_utilization": 0.3,       # single vLLM, keep headroom for grads + optimizer
+        "vllm_max_model_length": 4096,            # cap vLLM context window (prompt ≤ 2K + completion ≤ 1K)
         "gradient_checkpointing": True,           # trade compute for VRAM
         "gradient_checkpointing_kwargs": {"use_reentrant": False},  # required for LoRA compat
         "beta": 0.04,                             # KL penalty coefficient for GRPO
