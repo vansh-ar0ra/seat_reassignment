@@ -35,7 +35,8 @@ MODES = {
         "n_hard": 0,
         "max_steps": 2,
         "save_steps": 1,
-        "gradient_accumulation_steps": 1,  # small dataset — keep total batch ≤ n_easy
+        "gradient_accumulation_steps": 2,  # gen_batch = 1×1×2 = 2 → divisible by num_generations
+        "num_generations": 2,              # minimum for GRPO advantage; keeps smoke cheap
         "init_from": "sft",
         "push_to": None,  # no push for smoke
         "output_dir": "outputs/grpo-smoke",
@@ -158,6 +159,8 @@ def main() -> None:
     }
     if "gradient_accumulation_steps" in mode:
         overrides["gradient_accumulation_steps"] = mode["gradient_accumulation_steps"]
+    if "num_generations" in mode:
+        overrides["num_generations"] = mode["num_generations"]
     if push_repo:
         overrides["push_to_hub"] = True
         overrides["hub_model_id"] = push_repo
@@ -166,6 +169,12 @@ def main() -> None:
         overrides["push_to_hub"] = False
 
     grpo_config = build_grpo_config(**overrides)
+
+    # ── Sanity-check config ──────────────────────────────────
+    print(f"[CONFIG] per_device_train_batch_size={grpo_config.per_device_train_batch_size}")
+    print(f"[CONFIG] gradient_accumulation_steps={grpo_config.gradient_accumulation_steps}")
+    print(f"[CONFIG] num_generations={grpo_config.num_generations}")
+    print(f"[CONFIG] generation_batch_size={grpo_config.generation_batch_size}")
 
     # ── Build trainer ───────────────────────────────────────
     # Stock TRL 0.29+ GRPOTrainer with environment rollout support.

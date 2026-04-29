@@ -64,8 +64,8 @@ def build_grpo_config(
     from trl import GRPOConfig
 
     defaults = {
-        "per_device_train_batch_size": 4,
-        "gradient_accumulation_steps": 4,         # effective batch = 4 × 4 = 16
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 8,         # effective batch = 1 × 8 = 8 prompts per step
         "num_generations": 4,                     # 4 completions per prompt for GRPO variance
         "learning_rate": 2e-6,                    # conservative LR for LoRA fine-tuning
         "max_completion_length": 1024,            # model output cap per turn
