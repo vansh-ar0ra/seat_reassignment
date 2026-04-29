@@ -388,6 +388,7 @@ def _play_episode(
 
     consecutive_failures = 0
     history: list[dict] = []
+    done = False
 
     for turn in range(1, MAX_TURNS + 1):
         if obs.done:
@@ -468,10 +469,13 @@ def _play_episode(
             break
 
     # Force finalize if not done
-    if not obs.done:
-        action = FlightRebookingAction(tool_name="finalize_plan", args={})
-        step_result = env.step(action)
-        obs = step_result.observation
+    if not done and not getattr(obs, "done", False):
+        try:
+            action = FlightRebookingAction(tool_name="finalize_plan", args={})
+            step_result = env.step(action)
+            obs = step_result.observation
+        except RuntimeError as exc:
+            logger.warning("finalize_plan after loop failed: %s", exc)
 
     # Extract terminal scores
     grader_score = 0.0
