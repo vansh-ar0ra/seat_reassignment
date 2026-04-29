@@ -322,7 +322,7 @@ def _generate_via_trainer(
 
     Returns (prompt_token_ids, completion_token_ids, per_token_logprobs, gen_text).
     """
-    from trl.extras.vllm_utils import generate_rollout_completions
+    from trl.experimental.openenv import generate_rollout_completions
 
     prompt_text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
