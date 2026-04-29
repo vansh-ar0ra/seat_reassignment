@@ -37,6 +37,11 @@ def build_model_and_tokenizer(
         dtype=torch.bfloat16,
     )
 
+    # Ensure embedding matrix covers all tokenizer entries (Qwen3 has reserved tokens
+    # beyond model.config.vocab_size — without this, OOV IDs cause CUDA index OOB)
+    if len(tokenizer) > model.config.vocab_size:
+        model.resize_token_embeddings(len(tokenizer))
+
     lora_config = LoraConfig(
         r=lora_rank,
         lora_alpha=lora_rank,

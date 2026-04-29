@@ -53,6 +53,10 @@ echo "=== Project at $(git rev-parse --short HEAD) ==="
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 # Let vllm auto-select attention backend (FLASH_ATTN on A100)
 
+# Make CUDA errors synchronous for accurate tracebacks
+export CUDA_LAUNCH_BLOCKING=1
+export TORCH_USE_CUDA_DSA=1
+
 # ── Banner ───────────────────────────────────────────────────
 echo "══════════════════════════════════════════════════════════"
 echo "  JOB          = ${JOB:-idle}"

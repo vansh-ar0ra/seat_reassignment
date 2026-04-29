@@ -128,6 +128,11 @@ def main() -> None:
     print(f"Loading model (init from: {init_key} @ {init_repo})...")
     model, tokenizer = build_model_and_tokenizer()
 
+    # Vocab-size diagnostic — helps debug embedding OOB errors
+    print(f"[VOCAB CHECK] model.config.vocab_size={model.config.vocab_size}")
+    print(f"[VOCAB CHECK] len(tokenizer)={len(tokenizer)}")
+    print(f"[VOCAB CHECK] tokenizer.vocab_size={tokenizer.vocab_size}")
+
     # If we have an SFT or phase1 adapter on Hub, load those weights
     if init_repo:
         try:

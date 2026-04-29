@@ -563,6 +563,18 @@ def rollout_func(
                     float(breakdown.get(env_key, 0.0))
                 )
 
+    # Validate token IDs are in range (catches OOV before CUDA asserts)
+    _vocab_size = len(tokenizer)
+    for _i, (_p_ids, _c_ids) in enumerate(zip(all_prompt_ids, all_completion_ids)):
+        for _label, _ids in [("prompt_ids", _p_ids), ("completion_ids", _c_ids)]:
+            if _ids:
+                _max_id = max(_ids)
+                _min_id = min(_ids)
+                assert 0 <= _min_id and _max_id < _vocab_size, (
+                    f"Sample {_i} {_label}: id range [{_min_id}, {_max_id}] "
+                    f"outside vocab_size={_vocab_size}"
+                )
+
     result: dict[str, Any] = {
         # Required by TRL
         "prompt_ids": all_prompt_ids,
