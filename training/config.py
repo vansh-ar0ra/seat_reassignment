@@ -34,7 +34,7 @@ def build_model_and_tokenizer(
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
 
     lora_config = LoraConfig(
@@ -68,7 +68,6 @@ def build_grpo_config(
         "gradient_accumulation_steps": 8,         # effective batch = 4 × 8 = 32
         "num_generations": 4,                     # 4 completions per prompt for GRPO variance
         "learning_rate": 2e-6,                    # conservative LR for LoRA fine-tuning
-        "max_prompt_length": 2048,                # system prompt + env state fits in 2K tokens
         "max_completion_length": 1024,            # model output cap per turn
         "num_train_epochs": 1,                    # single pass over dataset
         "use_vllm": True,                         # fast generation via vLLM

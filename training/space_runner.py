@@ -57,7 +57,7 @@ def init_trackio(run_name: str, config: Optional[dict] = None) -> None:
     merged_config = {**gpu_info, **(config or {})}
 
     try:
-        trackio.init(run_name=run_name, config=merged_config)
+        trackio.init(project="irrops-training", name=run_name, config=merged_config)
         logger.info("trackio run '%s' initialised", run_name)
     except Exception as exc:
         logger.warning("trackio init failed: %s", exc)
