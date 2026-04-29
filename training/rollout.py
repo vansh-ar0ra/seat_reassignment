@@ -292,11 +292,12 @@ def _format_instruction(step: int, plan_submitted: bool) -> str:
     return "Choose your next action. Wrap it in <action>...</action> tags."
 
 
-def _format_result(tool_result: Optional[dict], reward: float, reward_reason: str) -> str:
+def _format_result(tool_result: Optional[dict], reward: Optional[float], reward_reason: Optional[str]) -> str:
     parts: list[str] = []
     if tool_result is not None:
         parts.append(f"Last tool result: {json.dumps(tool_result, indent=2)}")
-    parts.append(f"Reward: {reward:.4f} ({reward_reason})")
+    if reward is not None:
+        parts.append(f"Reward: {reward:.4f} ({reward_reason or ''})")
     return "\n".join(parts) if parts else "Tool executed."
 
 
