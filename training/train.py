@@ -89,8 +89,18 @@ def main() -> None:
     _orig_shuffle = _trl_utils.shuffle_sequence_dict
 
     def _debug_shuffle(seq_dict):
+        import torch as _torch
         print("=" * 70)
         print("[SHUFFLE DEBUG] dict at shuffle time:")
+        # Determine expected batch size from majority of tensors
+        batch_size = None
+        for k, v in seq_dict.items():
+            if hasattr(v, 'shape') and v.ndim >= 1:
+                if batch_size is None:
+                    batch_size = v.shape[0]
+                elif v.shape[0] > batch_size:
+                    batch_size = v.shape[0]
+
         for k, v in seq_dict.items():
             if v is None:
                 print(f"  {k}: None")
@@ -104,6 +114,7 @@ def main() -> None:
                     print(f"  {k}: {type(v).__name__} (introspection failed: {e})")
             else:
                 print(f"  {k}: {type(v).__name__} value={v!r}")
+
         print("=" * 70)
         return _orig_shuffle(seq_dict)
 
