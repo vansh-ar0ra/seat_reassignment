@@ -14,6 +14,10 @@ import logging
 import sys
 from pathlib import Path
 
+import os
+print(f"[ENV CHECK] CUDA_LAUNCH_BLOCKING={os.environ.get('CUDA_LAUNCH_BLOCKING', 'NOT SET')}")
+print(f"[ENV CHECK] TORCH_USE_CUDA_DSA={os.environ.get('TORCH_USE_CUDA_DSA', 'NOT SET')}")
+
 logger = logging.getLogger("flight_rebooking.train")
 
 # ─────────────────────────────────────────────────────────────
@@ -35,8 +39,9 @@ MODES = {
         "n_hard": 0,
         "max_steps": 2,
         "save_steps": 1,
-        "gradient_accumulation_steps": 2,  # gen_batch = 1×1×2 = 2 → divisible by num_generations
+        "gradient_accumulation_steps": 2,  # effective batch = 1 × 2 = 2 prompts per step
         "num_generations": 2,              # minimum for GRPO advantage; keeps smoke cheap
+        "generation_batch_size": 4,        # must = per_device_bs × grad_accum × num_generations = 1×2×2
         "init_from": "sft",
         "push_to": None,  # no push for smoke
         "output_dir": "outputs/grpo-smoke",

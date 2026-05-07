@@ -523,6 +523,9 @@ def rollout_func(
     tokenizer = trainer.processing_class
     num_generations = getattr(trainer.args, "num_generations", 1)
 
+    print(f"[ROLLOUT] called with {len(prompts)} prompts, num_generations={num_generations}, "
+          f"generation_batch_size={getattr(trainer.args, 'generation_batch_size', '?')}")
+
     # Accumulate per-sample results
     all_prompt_ids: list[list[int]] = []
     all_completion_ids: list[list[int]] = []
