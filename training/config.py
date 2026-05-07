@@ -17,14 +17,8 @@ def build_model_and_tokenizer(
 
     Returns (model, tokenizer) ready for GRPO training on A100 (80GB VRAM).
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import LoraConfig, get_peft_model
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
@@ -32,13 +26,11 @@ def build_model_and_tokenizer(
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
         dtype=torch.bfloat16,
+        device_map="auto",
     )
 
-    # Ensure embedding matrix covers all tokenizer entries (Qwen3 has reserved tokens
-    # beyond model.config.vocab_size — without this, OOV IDs cause CUDA index OOB)
+    # Ensure embedding matrix covers all tokenizer entries
     if len(tokenizer) > model.config.vocab_size:
         model.resize_token_embeddings(len(tokenizer))
 

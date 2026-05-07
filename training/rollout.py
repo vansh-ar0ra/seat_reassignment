@@ -563,18 +563,6 @@ def rollout_func(
                     float(breakdown.get(env_key, 0.0))
                 )
 
-    # Validate token IDs are in range (catches OOV before CUDA asserts)
-    _vocab_size = len(tokenizer)
-    for _i, (_p_ids, _c_ids) in enumerate(zip(all_prompt_ids, all_completion_ids)):
-        for _label, _ids in [("prompt_ids", _p_ids), ("completion_ids", _c_ids)]:
-            if _ids:
-                _max_id = max(_ids)
-                _min_id = min(_ids)
-                assert 0 <= _min_id and _max_id < _vocab_size, (
-                    f"Sample {_i} {_label}: id range [{_min_id}, {_max_id}] "
-                    f"outside vocab_size={_vocab_size}"
-                )
-
     result: dict[str, Any] = {
         # Required by TRL
         "prompt_ids": all_prompt_ids,
@@ -583,6 +571,31 @@ def rollout_func(
         # Completion mask: 1 = model token, 0 = env/tool token
         "env_mask": all_env_mask,
     }
+
+    # Validate token IDs are in range (catches OOV before CUDA asserts)
+    import torch as _torch
+    _model_vocab = trainer.model.config.vocab_size
+    for key in ("prompt_ids", "completion_ids"):
+        val = result.get(key)
+        if val is None:
+            continue
+        if isinstance(val, _torch.Tensor):
+            max_id = val.max().item()
+            min_id = val.min().item()
+            shape = tuple(val.shape)
+        else:
+            flat = [t for seq in val for t in (seq.tolist() if hasattr(seq, "tolist") else seq)]
+            if not flat:
+                continue
+            max_id = max(flat)
+            min_id = min(flat)
+            shape = (len(val), max(len(s) for s in val))
+        print(f"[ROLLOUT CHECK] {key}: shape={shape}, min={min_id}, max={max_id}, "
+              f"vocab={tokenizer.vocab_size}, model_vocab={_model_vocab}")
+        assert 0 <= min_id, f"{key} has negative ID: {min_id}"
+        assert max_id < _model_vocab, (
+            f"{key} has OOV ID: {max_id} >= model.config.vocab_size={_model_vocab}"
+        )
 
     # Reward component keys — forwarded to reward functions via extra_fields
     for key in REWARD_COMPONENTS:
