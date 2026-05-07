@@ -82,6 +82,34 @@ def main() -> None:
         init_trackio,
     )
 
+    # ── Monkey-patch shuffle_sequence_dict to dump dict before crash ──
+    import trl.trainer.utils as _trl_utils
+    import trl.trainer.grpo_trainer as _grpo_mod
+
+    _orig_shuffle = _trl_utils.shuffle_sequence_dict
+
+    def _debug_shuffle(seq_dict):
+        print("=" * 70)
+        print("[SHUFFLE DEBUG] dict at shuffle time:")
+        for k, v in seq_dict.items():
+            if v is None:
+                print(f"  {k}: None")
+            elif hasattr(v, 'shape'):
+                print(f"  {k}: tensor shape={tuple(v.shape)} dtype={v.dtype} device={v.device}")
+            elif hasattr(v, '__len__'):
+                try:
+                    inner = type(v[0]).__name__ if len(v) > 0 else "empty"
+                    print(f"  {k}: {type(v).__name__} len={len(v)} inner={inner}")
+                except Exception as e:
+                    print(f"  {k}: {type(v).__name__} (introspection failed: {e})")
+            else:
+                print(f"  {k}: {type(v).__name__} value={v!r}")
+        print("=" * 70)
+        return _orig_shuffle(seq_dict)
+
+    _trl_utils.shuffle_sequence_dict = _debug_shuffle
+    _grpo_mod.shuffle_sequence_dict = _debug_shuffle
+
     parser = argparse.ArgumentParser(description="GRPO training")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--smoke", action="store_true", help="Smoke test: 2 easy, 2 steps")
