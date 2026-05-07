@@ -563,6 +563,15 @@ def rollout_func(
                     float(breakdown.get(env_key, 0.0))
                 )
 
+    # Truncate completions to max_completion_length so TRL doesn't choke
+    # on ragged multi-turn sequences during the forward pass.
+    max_compl = getattr(trainer.args, "max_completion_length", 1024)
+    for i in range(len(all_completion_ids)):
+        if len(all_completion_ids[i]) > max_compl:
+            all_completion_ids[i] = all_completion_ids[i][:max_compl]
+            all_logprobs[i] = all_logprobs[i][:max_compl]
+            all_env_mask[i] = all_env_mask[i][:max_compl]
+
     result: dict[str, Any] = {
         # Required by TRL
         "prompt_ids": all_prompt_ids,

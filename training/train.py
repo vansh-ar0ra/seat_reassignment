@@ -97,6 +97,10 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(name)s — %(message)s")
 
+    import os
+    print(f"[ENV] CUDA_LAUNCH_BLOCKING={os.environ.get('CUDA_LAUNCH_BLOCKING')}")
+    print(f"[ENV] TORCH_USE_CUDA_DSA={os.environ.get('TORCH_USE_CUDA_DSA')}")
+
     print(f"Mode: {mode_key}")
     print(f"  Dataset: easy={mode['n_easy']}, medium={mode['n_medium']}, hard={mode['n_hard']}")
     print(f"  Max steps: {mode['max_steps']}")
