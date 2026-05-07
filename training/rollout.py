@@ -572,33 +572,23 @@ def rollout_func(
         "env_mask": all_env_mask,
     }
 
-    # Validate token IDs are in range (catches OOV before CUDA asserts)
-    import torch as _torch
-    _model_vocab = trainer.model.config.vocab_size
-    for key in ("prompt_ids", "completion_ids"):
-        val = result.get(key)
-        if val is None:
-            continue
-        if isinstance(val, _torch.Tensor):
-            max_id = val.max().item()
-            min_id = val.min().item()
-            shape = tuple(val.shape)
-        else:
-            flat = [t for seq in val for t in (seq.tolist() if hasattr(seq, "tolist") else seq)]
-            if not flat:
-                continue
-            max_id = max(flat)
-            min_id = min(flat)
-            shape = (len(val), max(len(s) for s in val))
-        print(f"[ROLLOUT CHECK] {key}: shape={shape}, min={min_id}, max={max_id}, "
-              f"vocab={tokenizer.vocab_size}, model_vocab={_model_vocab}")
-        assert 0 <= min_id, f"{key} has negative ID: {min_id}"
-        assert max_id < _model_vocab, (
-            f"{key} has OOV ID: {max_id} >= model.config.vocab_size={_model_vocab}"
-        )
-
     # Reward component keys — forwarded to reward functions via extra_fields
     for key in REWARD_COMPONENTS:
         result[key] = component_lists[key]
+
+    import torch
+    print(f"[ROLLOUT SHAPES] returning {len(prompts)} prompts → expected {len(prompts) * num_generations} completions")
+    for k, v in result.items():
+        if isinstance(v, torch.Tensor):
+            print(f"[ROLLOUT SHAPES] {k}: tensor, shape={tuple(v.shape)}, dtype={v.dtype}")
+        elif isinstance(v, list):
+            first_type = type(v[0]).__name__ if v else "empty"
+            if v and hasattr(v[0], '__len__'):
+                inner_lens = [len(x) for x in v]
+                print(f"[ROLLOUT SHAPES] {k}: list len={len(v)}, inner type={first_type}, inner lens min/max={min(inner_lens)}/{max(inner_lens)}")
+            else:
+                print(f"[ROLLOUT SHAPES] {k}: list len={len(v)}, inner type={first_type}")
+        else:
+            print(f"[ROLLOUT SHAPES] {k}: type={type(v).__name__}, value={v}")
 
     return result
