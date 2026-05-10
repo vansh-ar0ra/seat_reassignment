@@ -509,11 +509,12 @@ def rollout_func(
     Signature: ``RolloutFunc = Callable[[list[str], GRPOTrainer], dict[str, Any]]``
 
     Args:
-        prompts:  List of prompt strings (or message lists) from the dataset.
-                  Each prompt maps to one episode.  The function is responsible
-                  for returning ``num_generations`` completions per prompt.
-        trainer:  The GRPOTrainer instance.  Used to access the tokenizer,
-                  model (via vLLM), and ``num_generations`` config.
+        prompts:  List of prompt strings (or message lists) from the dataloader.
+                  TRL's RepeatSampler already repeats each dataset row
+                  ``num_generations`` times, so this list contains duplicates.
+                  We return exactly one completion per input prompt (1:1 mapping).
+        trainer:  The GRPOTrainer instance.  Used to access the tokenizer
+                  and model (via vLLM).
 
     Returns:
         Dict with required keys ``prompt_ids``, ``completion_ids``, ``logprobs``
@@ -521,9 +522,10 @@ def rollout_func(
         Extra keys (the 5 reward components) are forwarded to reward functions.
     """
     tokenizer = trainer.processing_class
-    num_generations = getattr(trainer.args, "num_generations", 1)
 
-    # Accumulate per-sample results
+    # Accumulate per-sample results — one completion per input prompt.
+    # TRL's RepeatSampler already handles num_generations by repeating each
+    # dataset row in the dataloader batch.  We must NOT multiply again here.
     all_prompt_ids: list[list[int]] = []
     all_completion_ids: list[list[int]] = []
     all_logprobs: list[list[float]] = []
@@ -541,27 +543,26 @@ def rollout_func(
             task_id = prompt.get("task_id", task_id)
             base_seed = prompt.get("seed", base_seed)
 
-        for gen_idx in range(num_generations):
-            seed = base_seed + gen_idx
+        seed = base_seed + prompt_idx  # unique per position in batch
 
-            episode = _play_episode(
-                trainer=trainer,
-                tokenizer=tokenizer,
-                task_id=task_id,
-                seed=seed,
+        episode = _play_episode(
+            trainer=trainer,
+            tokenizer=tokenizer,
+            task_id=task_id,
+            seed=seed,
+        )
+
+        all_prompt_ids.append(episode["prompt_ids"])
+        all_completion_ids.append(episode["completion_ids"])
+        all_logprobs.append(episode["logprobs"])
+        all_env_mask.append(episode["env_mask"])
+
+        # Map grader breakdown to reward component keys
+        breakdown = episode.get("breakdown", {})
+        for env_key, reward_key in _BREAKDOWN_KEY_MAP.items():
+            component_lists[reward_key].append(
+                float(breakdown.get(env_key, 0.0))
             )
-
-            all_prompt_ids.append(episode["prompt_ids"])
-            all_completion_ids.append(episode["completion_ids"])
-            all_logprobs.append(episode["logprobs"])
-            all_env_mask.append(episode["env_mask"])
-
-            # Map grader breakdown to reward component keys
-            breakdown = episode.get("breakdown", {})
-            for env_key, reward_key in _BREAKDOWN_KEY_MAP.items():
-                component_lists[reward_key].append(
-                    float(breakdown.get(env_key, 0.0))
-                )
 
     # Truncate completions to max_completion_length so TRL doesn't choke
     # on ragged multi-turn sequences during the forward pass.
@@ -586,7 +587,7 @@ def rollout_func(
         result[key] = component_lists[key]
 
     import torch
-    print(f"[ROLLOUT SHAPES] returning {len(prompts)} prompts → expected {len(prompts) * num_generations} completions")
+    print(f"[ROLLOUT SHAPES] returning {len(all_prompt_ids)} completions for {len(prompts)} prompts")
     for k, v in result.items():
         if isinstance(v, torch.Tensor):
             print(f"[ROLLOUT SHAPES] {k}: tensor, shape={tuple(v.shape)}, dtype={v.dtype}")
